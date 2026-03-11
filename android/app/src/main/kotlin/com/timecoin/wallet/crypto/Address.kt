@@ -147,12 +147,16 @@ object Base58 {
             num = num.multiply(BASE).add(BigInteger.valueOf(idx.toLong()))
         }
 
-        val bytes = num.toByteArray()
-        // BigInteger may add a leading 0x00 for sign — strip it
-        val stripped = if (bytes.size > 1 && bytes[0] == 0.toByte()) {
-            bytes.copyOfRange(1, bytes.size)
+        val stripped = if (num == BigInteger.ZERO) {
+            ByteArray(0)
         } else {
-            bytes
+            val bytes = num.toByteArray()
+            // BigInteger may add a leading 0x00 for sign — strip it
+            if (bytes.size > 1 && bytes[0] == 0.toByte()) {
+                bytes.copyOfRange(1, bytes.size)
+            } else {
+                bytes
+            }
         }
 
         val leadingOnes = s.takeWhile { it == '1' }.length
