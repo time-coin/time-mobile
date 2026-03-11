@@ -1,0 +1,246 @@
+package com.timecoin.wallet.network
+
+import com.timecoin.wallet.crypto.NetworkType
+import com.timecoin.wallet.model.*
+import io.ktor.client.*
+import io.ktor.client.call.*
+import io.ktor.client.engine.okhttp.*
+import io.ktor.client.plugins.contentnegotiation.*
+import io.ktor.client.request.*
+import io.ktor.http.*
+import io.ktor.serialization.kotlinx.json.*
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.*
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
+
+/**
+ * Masternode JSON-RPC 2.0 client — mirrors the desktop wallet's
+ * masternode_client.rs. Communicates with masternodes over HTTP.
+ *
+ * Ports: 24001 (mainnet), 24101 (testnet)
+ */
+class MasternodeClient(
+    endpoint: String,
+    private val credentials: Pair<String, String>? = null,
+) {
+    val rpcEndpoint: String = if (endpoint.startsWith("http://") || endpoint.startsWith("https://")) {
+        endpoint
+    } else {
+        "http://$endpoint"
+    }
+
+    private val client = HttpClient(OkHttp) {
+        install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+        engine {
+            config {
+                connectTimeout(10, TimeUnit.SECONDS)
+                readTimeout(30, TimeUnit.SECONDS)
+                // Accept self-signed certs (masternodes use auto-generated certs)
+                hostnameVerifier { _, _ -> true }
+            }
+        }
+    }
+
+    private val requestId = AtomicLong(1)
+
+    // ── RPC methods ──
+
+    /** Get balance for a single address. */
+    suspend fun getBalance(address: String): Balance {
+        val result = rpcCall("getbalance", buildJsonArray { add(address) })
+        val confirmed = jsonToSatoshis(result.jsonObject["available"])
+        val total = jsonToSatoshis(result.jsonObject["balance"])
+        return Balance(confirmed = confirmed, pending = 0, total = total)
+    }
+
+    /** Get combined balance across multiple addresses. */
+    suspend fun getBalances(addresses: List<String>): Balance {
+        val result = rpcCall("getbalances", buildJsonArray { add(buildJsonArray { addresses.forEach { add(it) } }) })
+        val confirmed = jsonToSatoshis(result.jsonObject["available"])
+        val total = jsonToSatoshis(result.jsonObject["balance"])
+        return Balance(confirmed = confirmed, pending = 0, total = total)
+    }
+
+    /** Get transaction history for a single address. */
+    suspend fun getTransactions(address: String, limit: Int = 50): List<TransactionRecord> {
+        val result = rpcCall("listtransactions", buildJsonArray { add(address); add(limit) })
+        return parseTransactionList(result)
+    }
+
+    /** Get transaction history across multiple addresses. */
+    suspend fun getTransactionsMulti(addresses: List<String>, limit: Int = 50): List<TransactionRecord> {
+        val result = rpcCall("listtransactionsmulti", buildJsonArray {
+            add(buildJsonArray { addresses.forEach { add(it) } }); add(limit)
+        })
+        return parseTransactionList(result)
+    }
+
+    /** Get UTXOs for addresses. */
+    suspend fun getUtxos(addresses: List<String>): List<Utxo> {
+        val result = rpcCall("listunspentmulti", buildJsonArray {
+            add(buildJsonArray { addresses.forEach { add(it) } })
+        })
+        return result.jsonArray.mapNotNull { u ->
+            val obj = u.jsonObject
+            val txid = obj["txid"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val vout = obj["vout"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
+            val amount = jsonToSatoshis(obj["amount"])
+            val addr = obj["address"]?.jsonPrimitive?.contentOrNull ?: ""
+            val confirmations = obj["confirmations"]?.jsonPrimitive?.intOrNull ?: 0
+            val spendable = obj["spendable"]?.jsonPrimitive?.booleanOrNull ?: true
+            Utxo(txid, vout, amount, addr, confirmations, spendable)
+        }
+    }
+
+    /** Broadcast a signed transaction (hex-encoded). */
+    suspend fun broadcastTransaction(txHex: String): String {
+        val result = rpcCall("sendrawtransaction", buildJsonArray { add(txHex) })
+        return result.jsonPrimitive.contentOrNull ?: result.toString().trim('"')
+    }
+
+    /** Validate an address on the masternode. */
+    suspend fun validateAddress(address: String): Boolean {
+        val result = rpcCall("validateaddress", buildJsonArray { add(address) })
+        return result.jsonObject["isvalid"]?.jsonPrimitive?.booleanOrNull ?: false
+    }
+
+    /** Get blockchain info (health check). */
+    suspend fun healthCheck(): HealthStatus {
+        val result = rpcCall("getblockchaininfo", buildJsonArray {})
+        val height = result.jsonObject["blocks"]?.jsonPrimitive?.longOrNull
+            ?: result.jsonObject["height"]?.jsonPrimitive?.longOrNull ?: 0
+        val network = result.jsonObject["chain"]?.jsonPrimitive?.contentOrNull ?: "unknown"
+
+        var peerCount = 0
+        var version = ""
+        try {
+            val ni = rpcCall("getnetworkinfo", buildJsonArray {})
+            peerCount = ni.jsonObject["connections"]?.jsonPrimitive?.intOrNull ?: 0
+            version = ni.jsonObject["subversion"]?.jsonPrimitive?.contentOrNull?.trim('/') ?: ""
+        } catch (_: Exception) { }
+
+        return HealthStatus(
+            status = "healthy",
+            version = "$network ($version)",
+            blockHeight = height,
+            peerCount = peerCount,
+        )
+    }
+
+    /** Get current block height. */
+    suspend fun getBlockHeight(): Long {
+        val result = rpcCall("getblockcount", buildJsonArray {})
+        return result.jsonPrimitive.longOrNull ?: 0
+    }
+
+    /** Query instant finality status. */
+    suspend fun getTransactionFinality(txid: String): FinalityStatus {
+        val result = rpcCall("gettransactionfinality", buildJsonArray { add(txid) })
+        return FinalityStatus(
+            txid = txid,
+            finalized = result.jsonObject["finalized"]?.jsonPrimitive?.booleanOrNull ?: false,
+            confirmations = result.jsonObject["confirmations"]?.jsonPrimitive?.intOrNull ?: 0,
+        )
+    }
+
+    fun close() { client.close() }
+
+    // ── Internal ──
+
+    private suspend fun rpcCall(method: String, params: JsonElement): JsonElement {
+        val id = requestId.getAndIncrement()
+        val request = buildJsonObject {
+            put("jsonrpc", "2.0")
+            put("id", id.toString())
+            put("method", method)
+            put("params", params)
+        }
+
+        val response: JsonObject = client.post(rpcEndpoint) {
+            contentType(ContentType.Application.Json)
+            if (credentials != null) {
+                basicAuth(credentials.first, credentials.second)
+            }
+            setBody(request)
+        }.body()
+
+        val error = response["error"]
+        if (error != null && error !is JsonNull) {
+            val code = error.jsonObject["code"]?.jsonPrimitive?.longOrNull ?: -1
+            val message = error.jsonObject["message"]?.jsonPrimitive?.contentOrNull ?: "Unknown error"
+            throw MasternodeException("RPC error $code: $message")
+        }
+
+        return response["result"] ?: throw MasternodeException("No result in JSON-RPC response")
+    }
+
+    private fun parseTransactionList(result: JsonElement): List<TransactionRecord> {
+        return result.jsonArray.mapNotNull { tx ->
+            val obj = tx.jsonObject
+            val txid = obj["txid"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val category = obj["category"]?.jsonPrimitive?.contentOrNull ?: "unknown"
+            val amount = jsonToSatoshisAbs(obj["amount"])
+            val fee = jsonToSatoshisAbs(obj["fee"])
+            val isSend = category == "send"
+            val address = obj["address"]?.jsonPrimitive?.contentOrNull ?: ""
+            val timestamp = obj["time"]?.jsonPrimitive?.longOrNull ?: 0
+            val inBlock = obj["blockhash"]?.jsonPrimitive?.contentOrNull != null
+            val finalized = obj["finalized"]?.jsonPrimitive?.booleanOrNull ?: false
+            val blockHeight = obj["blockheight"]?.jsonPrimitive?.longOrNull ?: 0
+            val confirmations = obj["confirmations"]?.jsonPrimitive?.longOrNull ?: 0
+
+            val displayAmount = if (isSend && fee > 0) amount - fee else amount
+            if (displayAmount == 0L && !isSend) return@mapNotNull null
+
+            TransactionRecord(
+                txid = txid,
+                isSend = isSend,
+                address = address,
+                amount = displayAmount,
+                fee = fee,
+                timestamp = timestamp,
+                status = if (inBlock || finalized) TransactionStatus.Approved else TransactionStatus.Pending,
+                blockHeight = blockHeight,
+                confirmations = confirmations,
+            )
+        }
+    }
+
+    companion object {
+        /** Parse a JSON value to satoshis (1 TIME = 100_000_000 satoshis). */
+        fun jsonToSatoshis(value: JsonElement?): Long {
+            if (value == null || value is JsonNull) return 0
+            val s = when (value) {
+                is JsonPrimitive -> value.content
+                else -> return 0
+            }.trim().trimStart('-')
+            // If original was negative, return 0
+            if (value is JsonPrimitive && value.content.trim().startsWith('-')) return 0
+            return parseTimeStringToSatoshis(s)
+        }
+
+        private fun jsonToSatoshisAbs(value: JsonElement?): Long {
+            if (value == null || value is JsonNull) return 0
+            val s = when (value) {
+                is JsonPrimitive -> value.content
+                else -> return 0
+            }.trim().trimStart('-')
+            return parseTimeStringToSatoshis(s)
+        }
+
+        private fun parseTimeStringToSatoshis(s: String): Long {
+            if (s.contains('e', ignoreCase = true)) {
+                return try { (s.toDouble() * 100_000_000).toLong() } catch (_: Exception) { 0 }
+            }
+            val parts = s.split('.', limit = 2)
+            val whole = parts[0].toLongOrNull() ?: 0
+            val frac = if (parts.size > 1) {
+                parts[1].take(8).padEnd(8, '0').toLongOrNull() ?: 0
+            } else 0
+            return whole * 100_000_000 + frac
+        }
+    }
+}
+
+class MasternodeException(message: String) : Exception(message)

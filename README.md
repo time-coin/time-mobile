@@ -1,268 +1,134 @@
 # TIME Coin Mobile Wallet
 
-Cross-platform mobile wallet for TIME Coin cryptocurrency.
+Android wallet for the TIME Coin cryptocurrency, ported from the
+[desktop wallet](https://github.com/user/time-wallet) (Rust/egui) to
+Kotlin + Jetpack Compose.
 
 ## Features
 
-- 📱 Native Android app (Phase 1)
-- 🍎 Native iOS app (Phase 2 - planned)
-- 🔐 Secure BIP-39/BIP-44 HD wallet
-- ⚡ Real-time transaction notifications via TCP
-- 🔔 Push notifications via FCM (background)
-- 💰 Send/receive TIME coins
-- 📊 Transaction history
-- 🔒 Biometric authentication
-
-## Project Status
-
-- ✅ Android MVP: In Development
-- ⏳ iOS: Planned
-
-## Documentation
-
-- [Android Quick Start](docs/ANDROID_QUICKSTART.md)
-- [TCP Protocol](docs/TCP_PROTOCOL.md)
-- [Architecture](docs/ARCHITECTURE.md)
+- 🔐 BIP-39 mnemonic + SLIP-0010 (Ed25519) HD wallet — same key derivation as the desktop wallet
+- 💰 Send / receive TIME coins with UTXO-based transactions
+- 📊 Transaction history with instant-finality status
+- 📷 QR code scanning to fill send addresses
+- ⚡ Real-time notifications via WebSocket (masternode connection)
+- 🌐 Mainnet / testnet switching
+- 🔒 AES-256-GCM encrypted wallet storage (Argon2id KDF)
+- 📡 Automatic peer discovery from `time-coin.io` API
+- 📒 Address book / contacts
 
 ## Requirements
 
-### Android
 - Android Studio Hedgehog (2023.1.1) or newer
-- Minimum SDK: 26 (Android 8.0)
-- Target SDK: 34 (Android 14)
-- Kotlin 1.9+
-
-### iOS (Future)
-- Xcode 15+
-- iOS 15+
-- Swift 5.9+
+- JDK 17+
+- Minimum SDK 26 (Android 8.0)
+- Target SDK 34 (Android 14)
 
 ## Quick Start
 
-### Android Development
-
 ```bash
-# Open Android project
 cd android
-# Open in Android Studio: File → Open → select android/
-Build from Command Line
-cd android
-./gradlew assembleDebug
-Architecture
-┌─────────────────────────────────────────┐
-│          Mobile App Architecture         │
-├─────────────────────────────────────────┤
-│                                           │
-│  App Foreground → TCP (port 24100)      │
-│    - Real-time notifications              │
-│    - < 1 second latency                   │
-│                                           │
-│  App Background → FCM Push               │
-│    - Wake app when closed                 │
-│    - Battery efficient                    │
-│                                           │
-│  HTTP API Fallback                       │
-│    - Wallet sync                          │
-│    - Transaction submission               │
-│                                           │
-└─────────────────────────────────────────┘
-Tech Stack
-Android
-Language: Kotlin
-UI: Jetpack Compose
-Crypto: BitcoinJ (BIP-39, BIP-44)
-Network: OkHttp, Raw Sockets
-Database: Room
-Security: Android Keystore, Biometric
-iOS (Planned)
-Language: Swift
-UI: SwiftUI
-Crypto: BitcoinKit
-Network: URLSession, Raw Sockets
-Contributing
-See CONTRIBUTING.md
 
-Security
-Report security issues to: security@time-coin.io
-
-License
-Licensed under the same terms as TIME Coin core:
-
-MIT License: LICENSE-MIT
-Apache License 2.0: LICENSE-APACHE
-Links
-TIME Coin Main Repository
-Documentation
-Website EOF
-5. Create .gitignore
-cat > .gitignore << 'EOF'
-
-Android
-android/.gradle/ android/build/ android/local.properties android/.idea/ android/*.iml android/app/build/ android/app/release/ android/.DS_Store
-
-iOS
-ios/Pods/ ios/.xcworkspace !ios/.xcworkspace/contents.xcworkspacedata ios/*.xcuserstate ios/DerivedData/ ios/.DS_Store
-
-Secrets
-*.keystore *.jks google-services.json GoogleService-Info.plist .env secrets/
-
-IDE
-.vscode/ .idea/
-
-OS
-.DS_Store Thumbs.db EOF
-
-6. Create initial docs
-cat > docs/ARCHITECTURE.md << 'EOF'
-
-TIME Coin Mobile Architecture
-Overview
-The TIME Coin mobile app uses a hybrid notification strategy:
-
-Foreground: TCP direct connection to masternode
-Background: FCM push notifications
-Fallback: HTTP API polling
-Components
-Wallet Layer
-BIP-39 mnemonic generation
-BIP-44 address derivation
-Private key management (secure keystore)
-Transaction signing
-Network Layer
-TCP protocol client (port 24100)
-HTTP REST API client
-FCM push notification handler
-Storage Layer
-Encrypted wallet data
-Transaction history
-Address book
-User preferences
-UI Layer
-Balance display
-Send/receive screens
-Transaction history
-QR scanner
-Settings
-Security Model
-Private keys stored in OS secure keystore
-Local data encrypted with AES-256
-Biometric authentication for transactions
-Certificate pinning for API calls
-Root detection on startup
-Data Flow
-Send Transaction
-User Input → Validate → Build TX → Sign (keystore) 
-  → Submit (HTTP) → Monitor (TCP) → Update UI
-Receive Transaction
-Masternode → TCP Notification → Update Balance 
-  → Show Notification → Update History
-Background Notification
-Masternode → FCM → OS Wakes App → Fetch Details 
-  → Update State → Show Notification
-Protocol
-See TCP_PROTOCOL.md for details. EOF
-
-7. Copy protocol docs from main repo
-cat > docs/TCP_PROTOCOL.md << 'EOF'
-
-TIME Coin TCP Protocol
-Connection
-Host: masternode IP/domain
-Port: 24100 (testnet), 24101 (mainnet)
-Protocol: Length-prefixed JSON over TCP
-Message Format
-[4-byte length (big-endian)][UTF-8 JSON message]
-Messages
-RegisterXpub (Client → Server)
-{
-  "RegisterXpub": {
-    "xpub": "xpub6CUGRUonZSQ4..."
-  }
-}
-XpubRegistered (Server → Client)
-{
-  "XpubRegistered": {
-    "success": true,
-    "message": "Monitoring 20 addresses"
-  }
-}
-NewTransactionNotification (Server → Client)
-{
-  "NewTransactionNotification": {
-    "transaction": {
-      "tx_hash": "abc123...",
-      "from_address": "TIME1...",
-      "to_address": "TIME1...",
-      "amount": 50000000,
-      "timestamp": 1732034400,
-      "block_height": 0,
-      "confirmations": 0
-    }
-  }
-}
-UtxoUpdate (Server → Client)
-{
-  "UtxoUpdate": {
-    "xpub": "xpub6CUGRUonZSQ4...",
-    "utxos": [
-      {
-        "txid": "abc123...",
-        "vout": 0,
-        "address": "TIME1...",
-        "amount": 100000000,
-        "block_height": 1234,
-        "confirmations": 5
-      }
-    ]
-  }
-}
-See main TIME Coin repo for full protocol specification. EOF
-
-8. Create Android project placeholder
-cat > android/README.md << 'EOF'
-
-TIME Coin Android App
-Setup
-Open Android Studio
-File → Open → Select this android/ directory
-Wait for Gradle sync
-Run on emulator or device
-Build
 # Debug build
 ./gradlew assembleDebug
 
-# Release build (requires signing key)
-./gradlew assembleRelease
-Testing
-# Unit tests
+# Run unit tests
 ./gradlew test
 
-# Instrumentation tests
+# Run a single test class
+./gradlew :app:testDebugUnitTest --tests "com.timecoin.wallet.crypto.AddressTest"
+
+# Instrumentation tests (requires emulator or device)
 ./gradlew connectedAndroidTest
-Project Structure
-app/
-├── src/
-│   ├── main/
-│   │   ├── kotlin/com/timecoin/wallet/
-│   │   │   ├── network/
-│   │   │   │   ├── TcpProtocolClient.kt
-│   │   │   │   └── HttpApiClient.kt
-│   │   │   ├── wallet/
-│   │   │   │   ├── Wallet.kt
-│   │   │   │   ├── Bip39.kt
-│   │   │   │   └── AddressDerivation.kt
-│   │   │   ├── storage/
-│   │   │   │   ├── WalletDatabase.kt
-│   │   │   │   └── SecurePreferences.kt
-│   │   │   ├── ui/
-│   │   │   │   ├── MainActivity.kt
-│   │   │   │   ├── SendScreen.kt
-│   │   │   │   ├── ReceiveScreen.kt
-│   │   │   │   └── HistoryScreen.kt
-│   │   │   └── fcm/
-│   │   │       └── TimeCoinMessagingService.kt
-│   │   ├── res/
-│   │   └── AndroidManifest.xml
-│   ├── test/
-│   └── androidTest/
-└── build.gradle.kts
+
+# Clean
+./gradlew clean
+```
+
+Or from the repo root via npm:
+
+```bash
+npm run android:build    # assembleDebug
+npm run android:test     # unit tests
+npm run android:clean    # clean
+```
+
+## Architecture
+
+The app is a **thin client** — all blockchain state lives on masternodes.
+The wallet only stores keys locally and queries masternodes via JSON-RPC.
+
+```
+┌──────────────────────────────────────────────┐
+│                  Android App                  │
+├──────────────────────────────────────────────┤
+│  UI Layer          Jetpack Compose screens    │
+│  ViewModel         State + event handling     │
+│  Service Layer     Masternode polling + WS    │
+├──────────────────────────────────────────────┤
+│  Wallet            Keys, signing, HD derive   │
+│  Crypto            Ed25519, SLIP-0010, AES    │
+│  Network           JSON-RPC + WebSocket       │
+│  Database          Room (contacts, tx cache)  │
+└──────────────────────────────────────────────┘
+          │                         │
+     JSON-RPC (HTTP)          WebSocket
+   (port 24001/24101)      (real-time tx)
+          │                         │
+     ┌────┴─────────────────────────┴────┐
+     │           Masternodes              │
+     └────────────────────────────────────┘
+```
+
+### Key Design Decisions
+
+| Area | Desktop (Rust) | Mobile (Kotlin) |
+|------|---------------|-----------------|
+| Crypto | ed25519-dalek | BouncyCastle Ed25519 |
+| HD derivation | SLIP-0010 (HMAC-SHA512) | Same algorithm, BouncyCastle |
+| Address format | TIME1/TIME0 + Base58 | Same format (portable) |
+| Encryption | AES-256-GCM + Argon2 | BouncyCastle AES-GCM + Argon2 |
+| HTTP client | reqwest | Ktor |
+| WebSocket | tokio-tungstenite | OkHttp WebSocket |
+| Database | sled | Room |
+| UI | egui | Jetpack Compose |
+
+### Network Ports
+
+| Network | JSON-RPC | WebSocket |
+|---------|----------|-----------|
+| Mainnet | 24001 | ws://{ip}:24001/ws |
+| Testnet | 24101 | ws://{ip}:24101/ws |
+
+## Project Structure
+
+```
+android/app/src/main/kotlin/com/timecoin/wallet/
+├── crypto/          # Ed25519, SLIP-0010, BIP-39, address encoding
+├── model/           # Data classes (UTXO, Transaction, Balance, etc.)
+├── network/         # Masternode JSON-RPC client, WebSocket, peer discovery
+├── wallet/          # Wallet manager, encryption, wallet file I/O
+├── db/              # Room database, DAOs, entities
+├── service/         # Background service connecting wallet ↔ network ↔ UI
+├── ui/              # Compose screens and navigation
+│   ├── theme/       # Material 3 colors, typography
+│   ├── screen/      # Individual screens (Overview, Send, Receive, etc.)
+│   └── component/   # Reusable composables
+└── di/              # Hilt dependency injection modules
+```
+
+## Security
+
+- Private keys are encrypted with AES-256-GCM; the encryption key is derived
+  from the user's password via Argon2id.
+- Mnemonic phrases are never stored in plaintext after initial setup.
+- Wallet files use the same format as the desktop wallet for portability.
+- Report security issues privately to: **security@time-coin.io**
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+Licensed under the same terms as TIME Coin core:
+MIT License and Apache License 2.0.

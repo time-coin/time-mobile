@@ -1,0 +1,25 @@
+{
+  "name": "time-coin-mobile",
+  "version": "0.1.0",
+  "description": "Cross-platform mobile wallet for TIME Coin cryptocurrency",
+  "private": true,
+  "scripts": {
+    "android:build": "cd android && .\\gradlew assembleDebug",
+    "android:release": "cd android && .\\gradlew assembleRelease",
+    "android:test": "cd android && .\\gradlew test",
+    "android:clean": "cd android && .\\gradlew clean"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TimeCoinProject/time-coin-mobile"
+  },
+  "keywords": [
+    "cryptocurrency",
+    "wallet",
+    "time-coin",
+    "mobile",
+    "android",
+    "ios"
+  ],
+  "license": "MIT OR Apache-2.0"
+}
