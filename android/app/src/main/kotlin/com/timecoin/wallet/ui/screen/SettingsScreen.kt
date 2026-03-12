@@ -24,7 +24,6 @@ fun SettingsScreen(service: WalletService) {
     val health by service.health.collectAsState()
     val wsConnected by service.wsConnected.collectAsState()
     val contacts by service.contacts.collectAsState()
-    val addresses by service.addresses.collectAsState()
     val decimalPlaces by service.decimalPlaces.collectAsState()
     val context = LocalContext.current
 
@@ -118,23 +117,6 @@ fun SettingsScreen(service: WalletService) {
                             Text("Connected Peers")
                             Text("${it.peerCount}", fontWeight = FontWeight.Medium)
                         }
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(24.dp))
-
-            // Addresses
-            Text("My Addresses (${addresses.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    addresses.forEachIndexed { index, addr ->
-                        Text(
-                            text = "${index + 1}. $addr",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        if (index < addresses.size - 1) Spacer(Modifier.height(4.dp))
                     }
                 }
             }
