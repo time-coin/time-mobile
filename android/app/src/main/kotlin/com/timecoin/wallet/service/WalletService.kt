@@ -116,6 +116,9 @@ class WalletService @Inject constructor(
     }
 
     fun checkExistingWallet() {
+        // Migrate legacy flat testnet file to subdirectory
+        WalletManager.migrateIfNeeded(walletDir)
+
         val mainExists = WalletManager.exists(walletDir, NetworkType.Mainnet)
         val testExists = WalletManager.exists(walletDir, NetworkType.Testnet)
         if (mainExists || testExists) {

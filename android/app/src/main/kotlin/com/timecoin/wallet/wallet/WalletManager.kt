@@ -123,8 +123,9 @@ class WalletManager private constructor(
 
     /** Save encrypted wallet to the given directory. */
     fun save(dir: File, password: String?) {
-        dir.mkdirs()
-        val walletFile = File(dir, walletFilename(network))
+        val targetDir = walletDir(dir, network)
+        targetDir.mkdirs()
+        val walletFile = File(targetDir, WALLET_FILENAME)
 
         val data = WalletFileData(
             version = WALLET_VERSION,
@@ -150,9 +151,31 @@ class WalletManager private constructor(
 
     companion object {
         private const val WALLET_VERSION = 3
+        private const val WALLET_FILENAME = "time-wallet.dat"
 
-        fun walletFilename(network: NetworkType): String =
+        /** Return the wallet directory for the given network (testnet uses a subdirectory). */
+        fun walletDir(baseDir: File, network: NetworkType): File =
+            if (network == NetworkType.Testnet) File(baseDir, "testnet") else baseDir
+
+        /** Legacy flat filename (for migration). */
+        private fun legacyFilename(network: NetworkType): String =
             if (network == NetworkType.Testnet) "time-wallet-testnet.dat" else "time-wallet.dat"
+
+        /**
+         * Migrate legacy flat testnet wallet file to subdirectory structure.
+         * Moves `{baseDir}/time-wallet-testnet.dat` → `{baseDir}/testnet/time-wallet.dat`
+         */
+        fun migrateIfNeeded(baseDir: File) {
+            val legacyTestnet = File(baseDir, "time-wallet-testnet.dat")
+            if (legacyTestnet.exists()) {
+                val testnetDir = File(baseDir, "testnet")
+                testnetDir.mkdirs()
+                val target = File(testnetDir, WALLET_FILENAME)
+                if (!target.exists()) {
+                    legacyTestnet.renameTo(target)
+                }
+            }
+        }
 
         /** Create a new wallet from a mnemonic phrase. */
         fun create(mnemonic: String, network: NetworkType): WalletManager {
@@ -162,7 +185,7 @@ class WalletManager private constructor(
 
         /** Load wallet from an encrypted file. */
         fun load(dir: File, network: NetworkType, password: String?): WalletManager {
-            val walletFile = File(dir, walletFilename(network))
+            val walletFile = File(walletDir(dir, network), WALLET_FILENAME)
             require(walletFile.exists()) { "Wallet file not found: ${walletFile.path}" }
 
             val content = walletFile.readText()
@@ -186,11 +209,11 @@ class WalletManager private constructor(
 
         /** Check if a wallet file exists. */
         fun exists(dir: File, network: NetworkType): Boolean =
-            File(dir, walletFilename(network)).exists()
+            File(walletDir(dir, network), WALLET_FILENAME).exists()
 
         /** Check if the wallet file is encrypted (contains JSON with "salt" field). */
         fun isEncrypted(dir: File, network: NetworkType): Boolean {
-            val file = File(dir, walletFilename(network))
+            val file = File(walletDir(dir, network), WALLET_FILENAME)
             if (!file.exists()) return false
             val content = file.readText()
             return content.contains("\"salt\"")
