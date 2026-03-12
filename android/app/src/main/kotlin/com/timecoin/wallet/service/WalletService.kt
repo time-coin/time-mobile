@@ -189,7 +189,7 @@ class WalletService @Inject constructor(
             } catch (e: Exception) {
                 _error.value = "Failed to load wallet: ${e.message}"
                 if (password != null) {
-                    _screen.value = Screen.PasswordUnlock
+                    _screen.value = Screen.PinUnlock
                 }
             } finally {
                 _loading.value = false
@@ -500,10 +500,56 @@ class WalletService @Inject constructor(
         masternodeClient = null
         wsClient?.stop()
         wsClient = null
+        pollJob?.cancel()
+        pollJob = null
         _connectedPeer.value = null
         _wsConnected.value = false
         _health.value = null
         connectToNetwork()
+    }
+
+    /**
+     * Switch between testnet and mainnet.
+     * Disconnects, resets wallet state, and loads the other network's wallet.
+     */
+    fun switchNetwork(toTestnet: Boolean) {
+        if (toTestnet == _isTestnet.value) return
+        val targetNetwork = if (toTestnet) NetworkType.Testnet else NetworkType.Mainnet
+
+        // Check if wallet exists for target network
+        if (!WalletManager.exists(walletDir, targetNetwork)) {
+            _error.value = "No wallet found for ${if (toTestnet) "testnet" else "mainnet"}. " +
+                "Create one from the welcome screen."
+            return
+        }
+
+        // Disconnect current network
+        masternodeClient?.close()
+        masternodeClient = null
+        wsClient?.stop()
+        wsClient = null
+        pollJob?.cancel()
+        pollJob = null
+
+        // Reset state
+        _connectedPeer.value = null
+        _wsConnected.value = false
+        _health.value = null
+        _balance.value = Balance()
+        _transactions.value = emptyList()
+        _utxos.value = emptyList()
+        _addresses.value = emptyList()
+        _utxoSynced.value = false
+        wallet = null
+
+        // Load wallet for target network (encrypted → need PIN)
+        val encrypted = WalletManager.isEncrypted(walletDir, targetNetwork)
+        if (encrypted) {
+            _isTestnet.value = toTestnet
+            _screen.value = Screen.PinUnlock
+        } else {
+            loadWallet(targetNetwork, null)
+        }
     }
 
     /**
