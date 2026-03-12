@@ -18,10 +18,15 @@ fun formatTime(epochSeconds: Long): String {
     }
 }
 
-fun formatSatoshis(satoshis: Long): String {
+fun formatSatoshis(satoshis: Long, decimalPlaces: Int = 8): String {
     val whole = satoshis / 100_000_000
     val frac = satoshis % 100_000_000
-    val fracStr = "%08d".format(frac).trimEnd('0').ifEmpty { "0" }
+    val fracStr = "%08d".format(frac)
+    val trimmed = if (decimalPlaces >= 8) {
+        fracStr.trimEnd('0').ifEmpty { "0" }
+    } else {
+        fracStr.take(decimalPlaces).ifEmpty { "0" }
+    }
     val wholeStr = whole.toString().reversed().chunked(3).joinToString(",").reversed()
-    return "$wholeStr.$fracStr"
+    return "$wholeStr.$trimmed"
 }

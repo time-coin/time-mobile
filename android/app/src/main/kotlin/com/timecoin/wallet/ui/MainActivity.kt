@@ -88,6 +88,8 @@ fun WalletApp(service: WalletService) {
                 Screen.NetworkSelect -> NetworkSelectScreen(service)
                 Screen.MnemonicSetup -> MnemonicSetupScreen(service)
                 Screen.MnemonicConfirm -> MnemonicSetupScreen(service) // reuse for now
+                Screen.PinSetup -> PinSetupScreen(service)
+                Screen.PinUnlock -> PinUnlockScreen(service)
                 Screen.PasswordUnlock -> PasswordUnlockScreen(service)
                 Screen.Overview -> OverviewScreen(service)
                 Screen.Send -> SendScreen(

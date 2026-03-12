@@ -16,6 +16,7 @@ import com.timecoin.wallet.crypto.Address
 import com.timecoin.wallet.crypto.NetworkType
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
+import com.timecoin.wallet.ui.component.formatSatoshis
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -125,7 +126,7 @@ fun SendScreen(
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 supportingText = {
-                    Text("Available: ${formatBalance(balance.confirmed)} TIME")
+                    Text("Available: ${formatSatoshis(balance.confirmed)} TIME")
                 },
             )
             Spacer(Modifier.height(8.dp))
@@ -153,7 +154,7 @@ fun SendScreen(
                         ) {
                             Text("Amount:", style = MaterialTheme.typography.bodySmall)
                             Text(
-                                "${formatBalance(amountSats)} TIME",
+                                "${formatSatoshis(amountSats)} TIME",
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
@@ -163,7 +164,7 @@ fun SendScreen(
                         ) {
                             Text("Fee:", style = MaterialTheme.typography.bodySmall)
                             Text(
-                                "${formatBalance(fee)} TIME (${(feeRate * 100)}%)",
+                                "${formatSatoshis(fee)} TIME (${(feeRate * 100)}%)",
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
@@ -179,7 +180,7 @@ fun SendScreen(
                                 fontWeight = FontWeight.Bold,
                             )
                             Text(
-                                "${formatBalance(amountSats + fee)} TIME",
+                                "${formatSatoshis(amountSats + fee)} TIME",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Bold,
                             )

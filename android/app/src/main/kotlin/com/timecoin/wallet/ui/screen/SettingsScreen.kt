@@ -23,6 +23,7 @@ fun SettingsScreen(service: WalletService) {
     val wsConnected by service.wsConnected.collectAsState()
     val contacts by service.contacts.collectAsState()
     val addresses by service.addresses.collectAsState()
+    val decimalPlaces by service.decimalPlaces.collectAsState()
 
     var showAddContact by remember { mutableStateOf(false) }
     var contactName by remember { mutableStateOf("") }
@@ -47,6 +48,30 @@ fun SettingsScreen(service: WalletService) {
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
         ) {
+            // Network info
+            Text("Display", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Decimal Places", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        listOf(2, 4, 6, 8).forEach { places ->
+                            FilterChip(
+                                selected = decimalPlaces == places,
+                                onClick = { service.setDecimalPlaces(places) },
+                                label = { Text("$places") },
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(24.dp))
+
             // Network info
             Text("Network", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))

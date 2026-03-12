@@ -16,6 +16,7 @@ import com.timecoin.wallet.model.TransactionRecord
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
 import com.timecoin.wallet.ui.component.formatTime
+import com.timecoin.wallet.ui.component.formatSatoshis
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -144,7 +145,7 @@ fun TransactionDetailRow(
             }
             Column(horizontalAlignment = Alignment.End) {
                 Text(
-                    text = "${if (tx.isSend) "-" else "+"}${formatBalance(tx.amount)} TIME",
+                    text = "${if (tx.isSend) "-" else "+"}${formatSatoshis(tx.amount)} TIME",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                     color = if (tx.isSend) MaterialTheme.colorScheme.error
@@ -186,7 +187,7 @@ fun TransactionDetailRow(
                     DetailRow("Block", tx.blockHeight.toString())
                     DetailRow("Confirmations", tx.confirmations.toString())
                     if (tx.fee > 0) {
-                        DetailRow("Fee", "${formatBalance(tx.fee)} TIME")
+                        DetailRow("Fee", "${formatSatoshis(tx.fee)} TIME")
                     }
                 }
             }

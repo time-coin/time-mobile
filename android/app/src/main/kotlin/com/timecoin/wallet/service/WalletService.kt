@@ -51,6 +51,9 @@ class WalletService @Inject constructor(
     private val _contacts = MutableStateFlow<List<ContactEntity>>(emptyList())
     val contacts: StateFlow<List<ContactEntity>> = _contacts
 
+    private val _utxoSynced = MutableStateFlow(false)
+    val utxoSynced: StateFlow<Boolean> = _utxoSynced
+
     private val _health = MutableStateFlow<HealthStatus?>(null)
     val health: StateFlow<HealthStatus?> = _health
 
@@ -83,16 +86,34 @@ class WalletService @Inject constructor(
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading
 
+    private val _decimalPlaces = MutableStateFlow(2)
+    val decimalPlaces: StateFlow<Int> = _decimalPlaces
+
     // ── Internal state ──
     private var wallet: WalletManager? = null
     private var masternodeClient: MasternodeClient? = null
     private var wsClient: WsNotificationClient? = null
     private var currentPassword: String? = null
     private var pollJob: Job? = null
+    private var pendingMnemonic: String? = null
 
     private val walletDir get() = context.filesDir
 
     // ── Wallet lifecycle ──
+
+    init {
+        scope.launch {
+            val saved = settingDao.get("decimal_places")
+            if (saved != null) _decimalPlaces.value = saved.toIntOrNull() ?: 2
+        }
+    }
+
+    fun setDecimalPlaces(places: Int) {
+        _decimalPlaces.value = places
+        scope.launch {
+            settingDao.set(com.timecoin.wallet.db.SettingEntity("decimal_places", places.toString()))
+        }
+    }
 
     fun checkExistingWallet() {
         val mainExists = WalletManager.exists(walletDir, NetworkType.Mainnet)
@@ -101,7 +122,7 @@ class WalletService @Inject constructor(
             val network = if (mainExists) NetworkType.Mainnet else NetworkType.Testnet
             val encrypted = WalletManager.isEncrypted(walletDir, network)
             if (encrypted) {
-                _screen.value = Screen.PasswordUnlock
+                _screen.value = Screen.PinUnlock
             } else {
                 loadWallet(network, null)
             }
@@ -111,6 +132,19 @@ class WalletService @Inject constructor(
     fun selectNetwork(isTestnet: Boolean) {
         _isTestnet.value = isTestnet
         _screen.value = Screen.MnemonicSetup
+    }
+
+    /** Store mnemonic temporarily and navigate to PIN setup. */
+    fun setPendingMnemonic(mnemonic: String) {
+        pendingMnemonic = mnemonic
+        _screen.value = Screen.PinSetup
+    }
+
+    /** Create wallet using the pending mnemonic and a 4-digit PIN. */
+    fun createWalletWithPin(pin: String) {
+        val mnemonic = pendingMnemonic ?: return
+        createWallet(mnemonic, pin)
+        pendingMnemonic = null
     }
 
     fun createWallet(mnemonic: String, password: String?) {
@@ -322,6 +356,7 @@ class WalletService @Inject constructor(
                 _balance.value = _balance.value.copy(
                     confirmed = utxos.filter { it.spendable }.sumOf { it.amount }
                 )
+                _utxoSynced.value = true
             } catch (_: Exception) { }
         }
     }
@@ -502,6 +537,8 @@ enum class Screen {
     NetworkSelect,
     MnemonicSetup,
     MnemonicConfirm,
+    PinSetup,
+    PinUnlock,
     PasswordUnlock,
     Overview,
     Send,

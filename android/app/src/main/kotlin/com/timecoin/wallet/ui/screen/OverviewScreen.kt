@@ -18,10 +18,14 @@ import com.timecoin.wallet.model.TransactionRecord
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
 import com.timecoin.wallet.ui.component.formatTime
+import com.timecoin.wallet.ui.component.formatSatoshis
+import androidx.compose.ui.graphics.Color
 
 @Composable
 fun OverviewScreen(service: WalletService) {
     val balance by service.balance.collectAsState()
+    val utxoSynced by service.utxoSynced.collectAsState()
+    val decimalPlaces by service.decimalPlaces.collectAsState()
     val transactions by service.transactions.collectAsState()
     val isTestnet by service.isTestnet.collectAsState()
     val health by service.health.collectAsState()
@@ -65,22 +69,38 @@ fun OverviewScreen(service: WalletService) {
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = "${formatBalance(balance.confirmed)} TIME",
+                    text = "${formatSatoshis(balance.confirmed, decimalPlaces)} TIME",
                     style = MaterialTheme.typography.headlineLarge,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val statusColor = if (utxoSynced) Color(0xFF00C850) else Color(0xFFFFA500)
+                    val statusText = if (utxoSynced) "Verified" else "Pending"
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = statusColor.copy(alpha = 0.15f)),
+                    ) {
+                        Text(
+                            text = statusText,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = statusColor,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                        )
+                    }
+                }
                 if (balance.pending > 0) {
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "Locked: ${formatBalance(balance.pending)} TIME",
+                        text = "Locked: ${formatSatoshis(balance.pending, decimalPlaces)} TIME",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
                     )
                 }
                 if (balance.pending > 0) {
                     Text(
-                        text = "Total: ${formatBalance(balance.total)} TIME",
+                        text = "Total: ${formatSatoshis(balance.total, decimalPlaces)} TIME",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
                     )
@@ -206,7 +226,7 @@ fun TransactionRow(tx: TransactionRecord) {
         }
         Column(horizontalAlignment = Alignment.End) {
             Text(
-                text = "${if (tx.isSend) "-" else "+"}${formatBalance(tx.amount)} TIME",
+                text = "${if (tx.isSend) "-" else "+"}${formatSatoshis(tx.amount)} TIME",
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
                 color = if (tx.isSend) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
@@ -218,13 +238,4 @@ fun TransactionRow(tx: TransactionRecord) {
             )
         }
     }
-}
-
-fun formatBalance(satoshis: Long): String {
-    val whole = satoshis / 100_000_000
-    val frac = satoshis % 100_000_000
-    val fracStr = "%08d".format(frac).trimEnd('0').ifEmpty { "0" }
-    // Add commas to whole part
-    val wholeStr = whole.toString().reversed().chunked(3).joinToString(",").reversed()
-    return "$wholeStr.$fracStr"
 }

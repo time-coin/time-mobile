@@ -32,8 +32,9 @@ import com.timecoin.wallet.ui.component.formatSatoshis
 @Composable
 fun ReceiveScreen(service: WalletService) {
     val addresses by service.addresses.collectAsState()
-    val balance by service.balance.collectAsState()
+    val utxos by service.utxos.collectAsState()
     val contacts by service.contacts.collectAsState()
+    val decimalPlaces by service.decimalPlaces.collectAsState()
     var selectedIndex by remember { mutableStateOf(0) }
     val clipboardManager = LocalClipboardManager.current
 
@@ -50,7 +51,13 @@ fun ReceiveScreen(service: WalletService) {
 
     val accentBlue = androidx.compose.ui.graphics.Color(0xFF2196F3)
     val balanceGreen = androidx.compose.ui.graphics.Color(0xFF00C850)
-    val lockedOrange = androidx.compose.ui.graphics.Color(0xFFFFA500)
+
+    // Per-address balance map from UTXOs
+    val addressBalances = remember(utxos) {
+        utxos.filter { it.spendable }
+            .groupBy { it.address }
+            .mapValues { (_, addrUtxos) -> addrUtxos.sumOf { it.amount } }
+    }
 
     Scaffold(
         topBar = {
@@ -70,51 +77,9 @@ fun ReceiveScreen(service: WalletService) {
                 .padding(padding)
                 .padding(horizontal = 16.dp),
         ) {
-            // ── Balance card ──
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                ),
-            ) {
-                Column(Modifier.padding(16.dp)) {
-                    Text(
-                        text = "Available",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = "${formatSatoshis(balance.confirmed)} TIME",
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = balanceGreen,
-                    )
-                    if (balance.pending > 0) {
-                        Spacer(Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Text(
-                                text = "Locked: ${formatSatoshis(balance.pending)} TIME",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = lockedOrange,
-                            )
-                            Text(
-                                text = "Total: ${formatSatoshis(balance.total)} TIME",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-            }
-            Spacer(Modifier.height(12.dp))
-
             // ── Fixed top section: QR code, address, copy button ──
             Column(
-                modifier = Modifier.padding(top = 16.dp),
+                modifier = Modifier.padding(top = 4.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 if (currentAddress.isNotEmpty()) {
@@ -272,6 +237,17 @@ fun ReceiveScreen(service: WalletService) {
                                 }
 
                                 if (editingIndex != index) {
+                                    // Per-address balance on the right
+                                    val addrBal = addressBalances[address] ?: 0L
+                                    Text(
+                                        text = if (addrBal > 0) formatSatoshis(addrBal, decimalPlaces)
+                                               else "—",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = if (addrBal > 0) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (addrBal > 0) balanceGreen
+                                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Spacer(Modifier.width(4.dp))
                                     IconButton(
                                         onClick = {
                                             editLabelText = labelMap[address] ?: ""
