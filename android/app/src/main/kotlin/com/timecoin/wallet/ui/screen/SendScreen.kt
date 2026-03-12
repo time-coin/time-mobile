@@ -35,22 +35,29 @@ fun SendScreen(
 
     // Consume scanned address from QR scanner
     val scannedAddress by service.scannedAddress.collectAsState()
+    val network = if (isTestnet) NetworkType.Testnet else NetworkType.Mainnet
+    val amountSats = (amountStr.toDoubleOrNull()?.times(100_000_000))?.toLong() ?: 0L
+
+    /** Validate address syntax and network match. */
+    fun validateAddress(addr: String): String? {
+        if (addr.isEmpty()) return null
+        return try {
+            val parsed = Address.fromString(addr)
+            if (parsed.network != network) {
+                "This is a ${parsed.network.name.lowercase()} address — wallet is on ${network.name.lowercase()}"
+            } else null
+        } catch (e: Exception) {
+            e.message
+        }
+    }
+
     LaunchedEffect(scannedAddress) {
         scannedAddress?.let { addr ->
             toAddress = addr
             service.clearScannedAddress()
-            // Validate immediately
-            addressError = try {
-                Address.fromString(addr)
-                null
-            } catch (e: Exception) {
-                e.message
-            }
+            addressError = validateAddress(addr)
         }
     }
-
-    val network = if (isTestnet) NetworkType.Testnet else NetworkType.Mainnet
-    val amountSats = (amountStr.toDoubleOrNull()?.times(100_000_000))?.toLong() ?: 0L
 
     Scaffold(
         topBar = {
@@ -75,14 +82,7 @@ fun SendScreen(
                 value = toAddress,
                 onValueChange = {
                     toAddress = it
-                    addressError = if (it.isNotEmpty()) {
-                        try {
-                            Address.fromString(it)
-                            null
-                        } catch (e: Exception) {
-                            e.message
-                        }
-                    } else null
+                    addressError = validateAddress(it)
                 },
                 label = { Text("Recipient Address") },
                 modifier = Modifier.fillMaxWidth(),

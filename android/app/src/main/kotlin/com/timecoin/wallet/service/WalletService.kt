@@ -402,6 +402,7 @@ class WalletService @Inject constructor(
                 isOwned = true,
                 derivationIndex = w.getAddresses().size - 1,
             ))
+            _contacts.value = contactDao.getAll()
             // Persist updated nextAddressIndex
             w.save(walletDir, currentPassword)
         }

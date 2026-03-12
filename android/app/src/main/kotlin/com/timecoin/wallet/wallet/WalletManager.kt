@@ -98,6 +98,9 @@ class WalletManager private constructor(
 
         // Recipient output
         val recipientAddr = Address.fromString(toAddress)
+        require(recipientAddr.network == network) {
+            "Address is for ${recipientAddr.network.name}, but wallet is on ${network.name}"
+        }
         tx.addOutput(TxOutput.new(amount, recipientAddr))
 
         // Change output (back to ourselves)

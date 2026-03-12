@@ -163,12 +163,16 @@ fun ReceiveScreen(service: WalletService) {
                     addresses.forEachIndexed { index, address ->
                         val isSelected = index == selectedIndex
                         val label = labelMap[address]?.ifEmpty { null } ?: "Address ${index + 1}"
+                        val isEditing = editingIndex == index
 
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
-                                .clickable { selectedIndex = index },
+                                .then(
+                                    if (!isEditing) Modifier.clickable { selectedIndex = index }
+                                    else Modifier,
+                                ),
                         ) {
                             // Blue accent bar for selected item
                             Box(
