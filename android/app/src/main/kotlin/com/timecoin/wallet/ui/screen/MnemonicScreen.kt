@@ -2,20 +2,28 @@ package com.timecoin.wallet.ui.screen
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.*
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.timecoin.wallet.crypto.MnemonicHelper
 import com.timecoin.wallet.service.WalletService
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MnemonicSetupScreen(service: WalletService) {
     var mnemonic by remember { mutableStateOf("") }
@@ -24,9 +32,32 @@ fun MnemonicSetupScreen(service: WalletService) {
     var password by remember { mutableStateOf("") }
     var passwordConfirm by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
-    var mnemonicInput by remember { mutableStateOf("") }
     var isRestoring by remember { mutableStateOf(false) }
-    var inputValid by remember { mutableStateOf<Boolean?>(null) }
+    var restoreWordCount by remember { mutableStateOf(12) }
+    val words = remember { mutableStateListOf(*Array(24) { "" }) }
+    val focusRequesters = remember { List(24) { FocusRequester() } }
+
+    // Per-word validation
+    val wordValidities = (0 until restoreWordCount).map { i ->
+        when {
+            words[i].isBlank() -> null
+            !MnemonicHelper.hasWordList -> null
+            else -> MnemonicHelper.isValidWord(words[i])
+        }
+    }
+    val validCount = wordValidities.count { it == true }
+    val allFilled = (0 until restoreWordCount).all { words[it].isNotBlank() }
+    val phraseValid = if (allFilled) {
+        val phrase = (0 until restoreWordCount).joinToString(" ") { words[it] }
+        MnemonicHelper.validate(phrase)
+    } else false
+
+    val effectiveMnemonic = when {
+        isRestoring && phraseValid -> (0 until restoreWordCount).joinToString(" ") { words[it] }
+        isGenerated -> mnemonic
+        else -> ""
+    }
+    val showPasswordSection = isGenerated || (isRestoring && phraseValid)
 
     Column(
         modifier = Modifier
@@ -64,7 +95,7 @@ fun MnemonicSetupScreen(service: WalletService) {
             }
         }
 
-        if (isGenerated) {
+        if (isGenerated && !isRestoring) {
             // Display generated mnemonic
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -80,14 +111,14 @@ fun MnemonicSetupScreen(service: WalletService) {
                         fontWeight = FontWeight.Bold,
                     )
                     Spacer(Modifier.height(12.dp))
-                    val words = mnemonic.split(" ")
-                    for (i in words.indices step 3) {
+                    val displayWords = mnemonic.split(" ")
+                    for (i in displayWords.indices step 3) {
                         Row(Modifier.fillMaxWidth()) {
                             for (j in 0 until 3) {
                                 val idx = i + j
-                                if (idx < words.size) {
+                                if (idx < displayWords.size) {
                                     Text(
-                                        text = "${idx + 1}. ${words[idx]}",
+                                        text = "${idx + 1}. ${displayWords[idx]}",
                                         modifier = Modifier.weight(1f),
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.Medium,
@@ -102,33 +133,158 @@ fun MnemonicSetupScreen(service: WalletService) {
         }
 
         if (isRestoring) {
-            // Restore from existing mnemonic
-            OutlinedTextField(
-                value = mnemonicInput,
-                onValueChange = {
-                    mnemonicInput = it
-                    inputValid = if (it.trim().split("\\s+".toRegex()).size >= 12) {
-                        MnemonicHelper.validate(it.trim())
-                    } else null
-                },
-                label = { Text("Enter mnemonic phrase") },
-                modifier = Modifier.fillMaxWidth().height(120.dp),
-                isError = inputValid == false,
-                supportingText = {
-                    when (inputValid) {
-                        true -> Text("✓ Valid mnemonic", color = MaterialTheme.colorScheme.primary)
-                        false -> Text("✗ Invalid mnemonic", color = MaterialTheme.colorScheme.error)
-                        null -> Text("Enter 12 or 24 words separated by spaces")
+            // Word count selector
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FilterChip(
+                    selected = restoreWordCount == 12,
+                    onClick = {
+                        restoreWordCount = 12
+                        for (i in 12 until 24) words[i] = ""
+                    },
+                    label = { Text("12 Words") },
+                )
+                Spacer(Modifier.width(12.dp))
+                FilterChip(
+                    selected = restoreWordCount == 24,
+                    onClick = { restoreWordCount = 24 },
+                    label = { Text("24 Words") },
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+
+            // Numbered word input grid (2 columns: 1-6 left, 7-12 right)
+            val halfCount = restoreWordCount / 2
+            for (row in 0 until halfCount) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val leftIdx = row
+                    val rightIdx = row + halfCount
+                        MnemonicWordInput(
+                            number = leftIdx + 1,
+                            value = words[leftIdx],
+                            onValueChange = { newValue ->
+                                if (" " in newValue || "\n" in newValue || "\t" in newValue) {
+                                    val parts = newValue.split("\\s+".toRegex())
+                                        .filter { it.isNotBlank() }
+                                    if (parts.isEmpty()) return@MnemonicWordInput
+                                    for ((j, word) in parts.withIndex()) {
+                                        if (leftIdx + j < restoreWordCount) {
+                                            words[leftIdx + j] = word.lowercase()
+                                        }
+                                    }
+                                    val nextIdx = (leftIdx + parts.size)
+                                        .coerceAtMost(restoreWordCount - 1)
+                                    try {
+                                        focusRequesters[nextIdx].requestFocus()
+                                    } catch (_: Exception) {}
+                                } else {
+                                    words[leftIdx] = newValue.lowercase().trim()
+                                }
+                            },
+                            isValid = wordValidities.getOrNull(leftIdx),
+                            focusRequester = focusRequesters[leftIdx],
+                            isLastField = leftIdx == restoreWordCount - 1,
+                            onNext = {
+                                val next = leftIdx + 1
+                                if (next < restoreWordCount) {
+                                    try {
+                                        focusRequesters[next].requestFocus()
+                                    } catch (_: Exception) {}
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                        MnemonicWordInput(
+                            number = rightIdx + 1,
+                            value = words[rightIdx],
+                            onValueChange = { newValue ->
+                                if (" " in newValue || "\n" in newValue || "\t" in newValue) {
+                                    val parts = newValue.split("\\s+".toRegex())
+                                        .filter { it.isNotBlank() }
+                                    if (parts.isEmpty()) return@MnemonicWordInput
+                                    for ((j, word) in parts.withIndex()) {
+                                        if (rightIdx + j < restoreWordCount) {
+                                            words[rightIdx + j] = word.lowercase()
+                                        }
+                                    }
+                                    val nextIdx = (rightIdx + parts.size)
+                                        .coerceAtMost(restoreWordCount - 1)
+                                    try {
+                                        focusRequesters[nextIdx].requestFocus()
+                                    } catch (_: Exception) {}
+                                } else {
+                                    words[rightIdx] = newValue.lowercase().trim()
+                                }
+                            },
+                            isValid = wordValidities.getOrNull(rightIdx),
+                            focusRequester = focusRequesters[rightIdx],
+                            isLastField = rightIdx == restoreWordCount - 1,
+                            onNext = {
+                                val next = rightIdx + 1
+                                if (next < restoreWordCount) {
+                                    try {
+                                        focusRequesters[next].requestFocus()
+                                    } catch (_: Exception) {}
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                }
+                Spacer(Modifier.height(4.dp))
+            }
+
+            // Validation status
+            Spacer(Modifier.height(8.dp))
+            when {
+                phraseValid -> Text(
+                    "✓ Valid mnemonic phrase",
+                    color = Color(0xFF4CAF50),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                )
+                allFilled && !phraseValid -> {
+                    val invalidCount = wordValidities.count { it == false }
+                    if (invalidCount > 0) {
+                        Text(
+                            "✗ $invalidCount invalid word${if (invalidCount > 1) "s" else ""}",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    } else {
+                        Text(
+                            "✗ Invalid mnemonic checksum",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
                     }
-                },
-            )
-            if (inputValid == true) {
-                mnemonic = mnemonicInput.trim()
-                isGenerated = true
+                }
+                else -> {
+                    Text(
+                        "$validCount of $restoreWordCount words entered",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(4.dp))
+            TextButton(onClick = {
+                isRestoring = false
+                isGenerated = false
+                mnemonic = ""
+                for (i in 0 until 24) words[i] = ""
+            }) {
+                Text("Generate a new mnemonic instead")
             }
         }
 
-        if (isGenerated || (isRestoring && inputValid == true)) {
+        if (showPasswordSection) {
             Spacer(Modifier.height(24.dp))
             Text(
                 text = "Set a password to encrypt your wallet (optional)",
@@ -145,9 +301,9 @@ fun MnemonicSetupScreen(service: WalletService) {
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 visualTransformation = if (showPassword) {
-                    androidx.compose.ui.text.input.VisualTransformation.None
+                    VisualTransformation.None
                 } else {
-                    androidx.compose.ui.text.input.PasswordVisualTransformation()
+                    PasswordVisualTransformation()
                 },
             )
             Spacer(Modifier.height(8.dp))
@@ -161,9 +317,9 @@ fun MnemonicSetupScreen(service: WalletService) {
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     visualTransformation = if (showPassword) {
-                        androidx.compose.ui.text.input.VisualTransformation.None
+                        VisualTransformation.None
                     } else {
-                        androidx.compose.ui.text.input.PasswordVisualTransformation()
+                        PasswordVisualTransformation()
                     },
                     isError = passwordConfirm.isNotEmpty() && password != passwordConfirm,
                 )
@@ -171,21 +327,72 @@ fun MnemonicSetupScreen(service: WalletService) {
 
             Spacer(Modifier.height(24.dp))
 
-            val canCreate = mnemonic.isNotEmpty() &&
+            val canCreate = effectiveMnemonic.isNotEmpty() &&
                 (password.isEmpty() || password == passwordConfirm)
 
             Button(
                 onClick = {
                     service.createWallet(
-                        mnemonic,
+                        effectiveMnemonic,
                         password.ifEmpty { null },
                     )
                 },
                 enabled = canCreate,
                 modifier = Modifier.fillMaxWidth().height(56.dp),
             ) {
-                Text("Create Wallet", fontSize = 18.sp)
+                Text(
+                    if (isRestoring) "Restore Wallet" else "Create Wallet",
+                    fontSize = 18.sp,
+                )
             }
         }
     }
+}
+
+@Composable
+private fun MnemonicWordInput(
+    number: Int,
+    value: String,
+    onValueChange: (String) -> Unit,
+    isValid: Boolean?,
+    focusRequester: FocusRequester,
+    isLastField: Boolean,
+    onNext: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier.focusRequester(focusRequester),
+        singleLine = true,
+        label = { Text("$number") },
+        textStyle = MaterialTheme.typography.bodyMedium,
+        keyboardOptions = KeyboardOptions(
+            capitalization = KeyboardCapitalization.None,
+            autoCorrect = false,
+            keyboardType = KeyboardType.Text,
+            imeAction = if (isLastField) ImeAction.Done else ImeAction.Next,
+        ),
+        keyboardActions = KeyboardActions(
+            onNext = { onNext() },
+        ),
+        trailingIcon = {
+            when {
+                value.isBlank() -> {}
+                isValid == true -> Icon(
+                    Icons.Default.Check,
+                    contentDescription = "Valid word",
+                    tint = Color(0xFF4CAF50),
+                    modifier = Modifier.size(20.dp),
+                )
+                isValid == false -> Icon(
+                    Icons.Default.Close,
+                    contentDescription = "Invalid word",
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        },
+        isError = value.isNotBlank() && isValid == false,
+    )
 }

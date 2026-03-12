@@ -1,14 +1,17 @@
 package com.timecoin.wallet.ui.screen
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.timecoin.wallet.R
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
 
@@ -19,9 +22,10 @@ fun WelcomeScreen(service: WalletService) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Text(
-            text = "⏱",
-            fontSize = 64.sp,
+        Image(
+            painter = painterResource(id = R.drawable.time_logo),
+            contentDescription = "TIME Coin Logo",
+            modifier = Modifier.size(128.dp),
         )
         Spacer(Modifier.height(16.dp))
         Text(

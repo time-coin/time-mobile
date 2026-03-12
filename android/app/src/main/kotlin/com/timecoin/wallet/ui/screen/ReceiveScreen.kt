@@ -3,8 +3,11 @@ package com.timecoin.wallet.ui.screen
 import android.graphics.Bitmap
 import android.graphics.Color
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -12,6 +15,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
@@ -22,15 +26,31 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
+import com.timecoin.wallet.ui.component.formatSatoshis
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReceiveScreen(service: WalletService) {
     val addresses by service.addresses.collectAsState()
+    val balance by service.balance.collectAsState()
+    val contacts by service.contacts.collectAsState()
     var selectedIndex by remember { mutableStateOf(0) }
     val clipboardManager = LocalClipboardManager.current
 
+    // Editable label state
+    var editingIndex by remember { mutableStateOf(-1) }
+    var editLabelText by remember { mutableStateOf("") }
+
     val currentAddress = addresses.getOrNull(selectedIndex) ?: ""
+
+    // Build a map of address -> label from contacts
+    val labelMap = remember(contacts) {
+        contacts.filter { it.isOwned }.associate { it.address to it.label }
+    }
+
+    val accentBlue = androidx.compose.ui.graphics.Color(0xFF2196F3)
+    val balanceGreen = androidx.compose.ui.graphics.Color(0xFF00C850)
+    val lockedOrange = androidx.compose.ui.graphics.Color(0xFFFFA500)
 
     Scaffold(
         topBar = {
@@ -48,103 +68,230 @@ fun ReceiveScreen(service: WalletService) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .padding(horizontal = 16.dp),
         ) {
-            // QR code
-            if (currentAddress.isNotEmpty()) {
-                val qrBitmap = remember(currentAddress) { generateQr(currentAddress) }
-                qrBitmap?.let { bmp ->
-                    Card {
-                        Image(
-                            bitmap = bmp.asImageBitmap(),
-                            contentDescription = "QR Code for $currentAddress",
-                            modifier = Modifier.size(240.dp).padding(16.dp),
-                        )
+            // ── Balance card ──
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                ),
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Available",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "${formatSatoshis(balance.confirmed)} TIME",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = balanceGreen,
+                    )
+                    if (balance.pending > 0) {
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                text = "Locked: ${formatSatoshis(balance.pending)} TIME",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = lockedOrange,
+                            )
+                            Text(
+                                text = "Total: ${formatSatoshis(balance.total)} TIME",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
-                Spacer(Modifier.height(16.dp))
+            }
+            Spacer(Modifier.height(12.dp))
 
-                // Address text
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    ),
-                ) {
-                    Column(
-                        Modifier.padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
+            // ── Fixed top section: QR code, address, copy button ──
+            Column(
+                modifier = Modifier.padding(top = 16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                if (currentAddress.isNotEmpty()) {
+                    val qrBitmap = remember(currentAddress) { generateQr(currentAddress) }
+                    qrBitmap?.let { bmp ->
+                        Card {
+                            Image(
+                                bitmap = bmp.asImageBitmap(),
+                                contentDescription = "QR Code for $currentAddress",
+                                modifier = Modifier.size(200.dp).padding(12.dp),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        ),
                     ) {
                         Text(
                             text = currentAddress,
-                            style = MaterialTheme.typography.bodyMedium,
+                            style = MaterialTheme.typography.bodySmall,
                             textAlign = TextAlign.Center,
                             fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(12.dp).fillMaxWidth(),
                         )
                     }
-                }
-                Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(8.dp))
 
-                // Copy button
-                Button(
-                    onClick = {
-                        clipboardManager.setText(AnnotatedString(currentAddress))
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Copy Address")
-                }
-                Spacer(Modifier.height(8.dp))
-
-                // Address selector
-                if (addresses.size > 1) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
+                    Button(
+                        onClick = { clipboardManager.setText(AnnotatedString(currentAddress)) },
+                        modifier = Modifier.fillMaxWidth(),
                     ) {
-                        IconButton(
-                            onClick = { if (selectedIndex > 0) selectedIndex-- },
-                            enabled = selectedIndex > 0,
-                        ) {
-                            Icon(Icons.Default.ChevronLeft, contentDescription = "Previous")
-                        }
-                        Text(
-                            text = "Address ${selectedIndex + 1} of ${addresses.size}",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        IconButton(
-                            onClick = { if (selectedIndex < addresses.size - 1) selectedIndex++ },
-                            enabled = selectedIndex < addresses.size - 1,
-                        ) {
-                            Icon(Icons.Default.ChevronRight, contentDescription = "Next")
-                        }
+                        Icon(Icons.Default.ContentCopy, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Copy Address")
                     }
                 }
+            }
 
-                Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
 
-                // Generate new address
+            // ── Scrollable address list ──
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Your Addresses (${addresses.size})",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
                 OutlinedButton(
                     onClick = {
                         service.generateAddress()
-                        selectedIndex = addresses.size // will be the new one
+                        selectedIndex = addresses.size
                     },
-                    modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Generate New Address")
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("New")
                 }
-            } else {
-                Text(
-                    text = "No addresses available",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            }
+            Spacer(Modifier.height(8.dp))
+
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                if (addresses.isEmpty()) {
+                    Text(
+                        text = "No addresses available",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    addresses.forEachIndexed { index, address ->
+                        val isSelected = index == selectedIndex
+                        val label = labelMap[address]?.ifEmpty { null } ?: "Address ${index + 1}"
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { selectedIndex = index },
+                        ) {
+                            // Blue accent bar for selected item
+                            Box(
+                                modifier = Modifier
+                                    .width(4.dp)
+                                    .height(56.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(
+                                        if (isSelected) accentBlue
+                                        else androidx.compose.ui.graphics.Color.Transparent,
+                                    ),
+                            )
+
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .background(
+                                        if (isSelected) accentBlue.copy(alpha = 0.08f)
+                                        else androidx.compose.ui.graphics.Color.Transparent,
+                                        RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp),
+                                    )
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    if (editingIndex == index) {
+                                        OutlinedTextField(
+                                            value = editLabelText,
+                                            onValueChange = { editLabelText = it },
+                                            singleLine = true,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            textStyle = MaterialTheme.typography.labelMedium,
+                                            trailingIcon = {
+                                                Row {
+                                                    IconButton(
+                                                        onClick = {
+                                                            service.updateAddressLabel(address, editLabelText)
+                                                            editingIndex = -1
+                                                        },
+                                                        modifier = Modifier.size(32.dp),
+                                                    ) {
+                                                        Icon(Icons.Default.Check, contentDescription = "Save", modifier = Modifier.size(18.dp))
+                                                    }
+                                                    IconButton(
+                                                        onClick = { editingIndex = -1 },
+                                                        modifier = Modifier.size(32.dp),
+                                                    ) {
+                                                        Icon(Icons.Default.Close, contentDescription = "Cancel", modifier = Modifier.size(18.dp))
+                                                    }
+                                                }
+                                            },
+                                        )
+                                    } else {
+                                        Text(
+                                            text = label,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (isSelected) accentBlue else MaterialTheme.colorScheme.onSurface,
+                                        )
+                                        Text(
+                                            text = address.take(16) + "..." + address.takeLast(8),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+
+                                if (editingIndex != index) {
+                                    IconButton(
+                                        onClick = {
+                                            editLabelText = labelMap[address] ?: ""
+                                            editingIndex = index
+                                        },
+                                        modifier = Modifier.size(32.dp),
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Edit,
+                                            contentDescription = "Edit Label",
+                                            modifier = Modifier.size(16.dp),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                    }
+                }
             }
         }
     }

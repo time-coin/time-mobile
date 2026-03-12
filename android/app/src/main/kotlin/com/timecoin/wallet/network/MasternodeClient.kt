@@ -11,12 +11,19 @@ import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
+import okhttp3.OkHttpClient
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 
 /**
  * Masternode JSON-RPC 2.0 client — mirrors the desktop wallet's
- * masternode_client.rs. Communicates with masternodes over HTTP.
+ * masternode_client.rs. Communicates with masternodes over HTTPS.
+ * Masternodes use self-signed TLS certificates by default.
  *
  * Ports: 24001 (mainnet), 24101 (testnet)
  */
@@ -27,18 +34,13 @@ class MasternodeClient(
     val rpcEndpoint: String = if (endpoint.startsWith("http://") || endpoint.startsWith("https://")) {
         endpoint
     } else {
-        "http://$endpoint"
+        "https://$endpoint"
     }
 
     private val client = HttpClient(OkHttp) {
         install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
         engine {
-            config {
-                connectTimeout(10, TimeUnit.SECONDS)
-                readTimeout(30, TimeUnit.SECONDS)
-                // Accept self-signed certs (masternodes use auto-generated certs)
-                hostnameVerifier { _, _ -> true }
-            }
+            preconfigured = trustAllOkHttpClient
         }
     }
 
@@ -51,7 +53,7 @@ class MasternodeClient(
         val result = rpcCall("getbalance", buildJsonArray { add(address) })
         val confirmed = jsonToSatoshis(result.jsonObject["available"])
         val total = jsonToSatoshis(result.jsonObject["balance"])
-        return Balance(confirmed = confirmed, pending = 0, total = total)
+        return Balance(confirmed = confirmed, pending = total - confirmed, total = total)
     }
 
     /** Get combined balance across multiple addresses. */
@@ -59,7 +61,7 @@ class MasternodeClient(
         val result = rpcCall("getbalances", buildJsonArray { add(buildJsonArray { addresses.forEach { add(it) } }) })
         val confirmed = jsonToSatoshis(result.jsonObject["available"])
         val total = jsonToSatoshis(result.jsonObject["balance"])
-        return Balance(confirmed = confirmed, pending = 0, total = total)
+        return Balance(confirmed = confirmed, pending = total - confirmed, total = total)
     }
 
     /** Get transaction history for a single address. */
@@ -184,7 +186,9 @@ class MasternodeClient(
             val fee = jsonToSatoshisAbs(obj["fee"])
             val isSend = category == "send"
             val address = obj["address"]?.jsonPrimitive?.contentOrNull ?: ""
-            val timestamp = obj["time"]?.jsonPrimitive?.longOrNull ?: 0
+            val timestamp = obj["time"]?.jsonPrimitive?.longOrNull
+                ?: obj["blocktime"]?.jsonPrimitive?.longOrNull
+                ?: obj["timestamp"]?.jsonPrimitive?.longOrNull ?: 0
             val inBlock = obj["blockhash"]?.jsonPrimitive?.contentOrNull != null
             val finalized = obj["finalized"]?.jsonPrimitive?.booleanOrNull ?: false
             val blockHeight = obj["blockheight"]?.jsonPrimitive?.longOrNull ?: 0
@@ -208,6 +212,26 @@ class MasternodeClient(
     }
 
     companion object {
+        /** Trust manager that accepts all certificates (for self-signed masternode certs). */
+        private val trustAllManager = object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}
+            override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?) {}
+            override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+        }
+
+        private val trustAllSslContext: SSLContext = SSLContext.getInstance("TLS").apply {
+            init(null, arrayOf<TrustManager>(trustAllManager), SecureRandom())
+        }
+
+        /** Pre-configured OkHttpClient that trusts all certs and forces HTTP/1.1. */
+        val trustAllOkHttpClient: OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .sslSocketFactory(trustAllSslContext.socketFactory, trustAllManager)
+            .hostnameVerifier { _, _ -> true }
+            .protocols(listOf(okhttp3.Protocol.HTTP_1_1))
+            .build()
+
         /** Parse a JSON value to satoshis (1 TIME = 100_000_000 satoshis). */
         fun jsonToSatoshis(value: JsonElement?): Long {
             if (value == null || value is JsonNull) return 0

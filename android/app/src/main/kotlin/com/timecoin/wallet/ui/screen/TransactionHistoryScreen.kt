@@ -178,6 +178,10 @@ fun TransactionDetailRow(
             ) {
                 Column(Modifier.padding(12.dp)) {
                     DetailRow("TxID", tx.txid)
+                    DetailRow("Date", if (tx.timestamp > 0) {
+                        java.text.SimpleDateFormat("MMM d, yyyy h:mm a", java.util.Locale.getDefault())
+                            .format(java.util.Date(tx.timestamp * 1000))
+                    } else "Pending")
                     DetailRow("Status", tx.status.name)
                     DetailRow("Block", tx.blockHeight.toString())
                     DetailRow("Confirmations", tx.confirmations.toString())

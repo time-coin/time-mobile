@@ -19,12 +19,12 @@ import java.io.File
 object PeerDiscovery {
 
     private const val MAINNET_URL = "https://time-coin.io/api/peers"
-    private const val TESTNET_URL = "https://www.time-coin.io/api/testnet/peers"
+    private const val TESTNET_URL = "https://time-coin.io/api/testnet/peers"
     private const val MAINNET_PORT = 24001
     private const val TESTNET_PORT = 24101
 
     /**
-     * Fetch peer endpoints. Returns list of "http://{ip}:{port}" strings.
+     * Fetch peer endpoints. Returns list of "https://{ip}:{port}" strings.
      */
     suspend fun fetchPeers(isTestnet: Boolean, cacheDir: File? = null): List<String> {
         return try {
@@ -50,7 +50,7 @@ object PeerDiscovery {
 
             require(ips.isNotEmpty()) { "No peers returned from API" }
 
-            return ips.map { ip -> "http://$ip:$port" }
+            return ips.map { ip -> "https://$ip:$port" }
         } finally {
             client.close()
         }

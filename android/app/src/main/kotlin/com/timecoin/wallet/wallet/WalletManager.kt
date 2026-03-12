@@ -28,6 +28,14 @@ class WalletManager private constructor(
     /** All derived addresses (index 0 = primary). */
     private val addresses = mutableListOf(primaryAddress)
 
+    init {
+        // Re-derive all previously generated addresses beyond the primary
+        for (i in 1 until nextAddressIndex) {
+            val addr = MnemonicHelper.deriveAddress(mnemonic, "", 0, 0, i, network)
+            addresses.add(addr)
+        }
+    }
+
     fun getAddresses(): List<String> = addresses.toList()
 
     /** Generate a new HD address at the next index. */

@@ -3,6 +3,7 @@ package com.timecoin.wallet.ui
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -22,6 +23,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var walletService: WalletService
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         super.onCreate(savedInstanceState)
 
         walletService.checkExistingWallet()
@@ -47,7 +49,7 @@ fun WalletApp(service: WalletService) {
 
     Scaffold(
         bottomBar = {
-            if (currentScreen in listOf(Screen.Overview, Screen.Transactions, Screen.Settings)) {
+            if (currentScreen in listOf(Screen.Overview, Screen.Transactions, Screen.Connections, Screen.Settings)) {
                 NavigationBar {
                     NavigationBarItem(
                         selected = currentScreen == Screen.Overview,
@@ -60,6 +62,12 @@ fun WalletApp(service: WalletService) {
                         onClick = { service.navigateTo(Screen.Transactions) },
                         icon = { Icon(Icons.Default.List, contentDescription = null) },
                         label = { Text("History") },
+                    )
+                    NavigationBarItem(
+                        selected = currentScreen == Screen.Connections,
+                        onClick = { service.navigateTo(Screen.Connections) },
+                        icon = { Icon(Icons.Default.Wifi, contentDescription = null) },
+                        label = { Text("Peers") },
                     )
                     NavigationBarItem(
                         selected = currentScreen == Screen.Settings,
@@ -82,9 +90,20 @@ fun WalletApp(service: WalletService) {
                 Screen.MnemonicConfirm -> MnemonicSetupScreen(service) // reuse for now
                 Screen.PasswordUnlock -> PasswordUnlockScreen(service)
                 Screen.Overview -> OverviewScreen(service)
-                Screen.Send -> SendScreen(service)
+                Screen.Send -> SendScreen(
+                    service = service,
+                    onScanQr = { service.navigateTo(Screen.QrScanner) },
+                )
+                Screen.QrScanner -> QrScannerScreen(
+                    onResult = { address ->
+                        service.setScannedAddress(address)
+                        service.navigateTo(Screen.Send)
+                    },
+                    onBack = { service.navigateTo(Screen.Send) },
+                )
                 Screen.Receive -> ReceiveScreen(service)
                 Screen.Transactions -> TransactionHistoryScreen(service)
+                Screen.Connections -> ConnectionsScreen(service)
                 Screen.Settings -> SettingsScreen(service)
             }
         }

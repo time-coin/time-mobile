@@ -59,20 +59,28 @@ fun OverviewScreen(service: WalletService) {
         ) {
             Column(Modifier.padding(20.dp)) {
                 Text(
-                    text = "Balance",
+                    text = "Available Balance",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = "${formatBalance(balance.total)} TIME",
+                    text = "${formatBalance(balance.confirmed)} TIME",
                     style = MaterialTheme.typography.headlineLarge,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
-                if (balance.confirmed != balance.total) {
+                if (balance.pending > 0) {
+                    Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "Available: ${formatBalance(balance.confirmed)} TIME",
+                        text = "Locked: ${formatBalance(balance.pending)} TIME",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                    )
+                }
+                if (balance.pending > 0) {
+                    Text(
+                        text = "Total: ${formatBalance(balance.total)} TIME",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
                     )

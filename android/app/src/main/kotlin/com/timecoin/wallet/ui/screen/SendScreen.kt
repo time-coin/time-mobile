@@ -32,6 +32,22 @@ fun SendScreen(
     var amountStr by remember { mutableStateOf("") }
     var addressError by remember { mutableStateOf<String?>(null) }
 
+    // Consume scanned address from QR scanner
+    val scannedAddress by service.scannedAddress.collectAsState()
+    LaunchedEffect(scannedAddress) {
+        scannedAddress?.let { addr ->
+            toAddress = addr
+            service.clearScannedAddress()
+            // Validate immediately
+            addressError = try {
+                Address.fromString(addr)
+                null
+            } catch (e: Exception) {
+                e.message
+            }
+        }
+    }
+
     val network = if (isTestnet) NetworkType.Testnet else NetworkType.Mainnet
     val amountSats = (amountStr.toDoubleOrNull()?.times(100_000_000))?.toLong() ?: 0L
 

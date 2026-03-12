@@ -1,6 +1,7 @@
 package com.timecoin.wallet.service
 
 import android.content.Context
+import android.util.Log
 import com.timecoin.wallet.crypto.*
 import com.timecoin.wallet.db.*
 import com.timecoin.wallet.model.*
@@ -56,8 +57,25 @@ class WalletService @Inject constructor(
     private val _wsConnected = MutableStateFlow(false)
     val wsConnected: StateFlow<Boolean> = _wsConnected
 
+    private val _peers = MutableStateFlow<List<String>>(emptyList())
+    val peers: StateFlow<List<String>> = _peers
+
+    private val _connectedPeer = MutableStateFlow<String?>(null)
+    val connectedPeer: StateFlow<String?> = _connectedPeer
+
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
+
+    private val _scannedAddress = MutableStateFlow<String?>(null)
+    val scannedAddress: StateFlow<String?> = _scannedAddress
+
+    fun setScannedAddress(address: String) {
+        _scannedAddress.value = address
+    }
+
+    fun clearScannedAddress() {
+        _scannedAddress.value = null
+    }
 
     private val _success = MutableStateFlow<String?>(null)
     val success: StateFlow<String?> = _success
@@ -69,6 +87,7 @@ class WalletService @Inject constructor(
     private var wallet: WalletManager? = null
     private var masternodeClient: MasternodeClient? = null
     private var wsClient: WsNotificationClient? = null
+    private var currentPassword: String? = null
     private var pollJob: Job? = null
 
     private val walletDir get() = context.filesDir
@@ -100,6 +119,7 @@ class WalletService @Inject constructor(
             try {
                 val network = if (_isTestnet.value) NetworkType.Testnet else NetworkType.Mainnet
                 wallet = WalletManager.create(mnemonic, network)
+                currentPassword = password
                 wallet!!.save(walletDir, password)
 
                 // Save primary address as owned contact
@@ -125,6 +145,7 @@ class WalletService @Inject constructor(
             _loading.value = true
             try {
                 wallet = WalletManager.load(walletDir, network, password)
+                currentPassword = password
                 _isTestnet.value = network == NetworkType.Testnet
                 _walletLoaded.value = true
                 _addresses.value = wallet!!.getAddresses()
@@ -148,24 +169,46 @@ class WalletService @Inject constructor(
         scope.launch {
             try {
                 val isTestnet = _isTestnet.value
+                Log.d("WalletService", "Connecting to network, isTestnet=$isTestnet")
                 val peers = PeerDiscovery.fetchPeers(isTestnet, walletDir)
+                Log.d("WalletService", "Discovered ${peers.size} peers: $peers")
+                _peers.value = peers
                 if (peers.isEmpty()) {
                     _error.value = "No masternodes found"
                     return@launch
                 }
 
-                // Try peers until one responds
+                // Try peers until one responds (try HTTPS first, then HTTP fallback)
                 for (peer in peers) {
-                    try {
-                        val client = MasternodeClient(peer)
-                        client.healthCheck() // test connectivity
-                        masternodeClient = client
-                        _health.value = client.healthCheck()
-                        break
-                    } catch (_: Exception) { continue }
+                    // Derive both HTTPS and HTTP URLs for the peer
+                    val peerUrls = if (peer.startsWith("https://")) {
+                        listOf(peer, peer.replaceFirst("https://", "http://"))
+                    } else if (peer.startsWith("http://")) {
+                        listOf(peer.replaceFirst("http://", "https://"), peer)
+                    } else {
+                        listOf("https://$peer", "http://$peer")
+                    }
+
+                    for (url in peerUrls) {
+                        try {
+                            Log.d("WalletService", "Trying peer: $url")
+                            val client = MasternodeClient(url)
+                            val h = client.healthCheck()
+                            masternodeClient = client
+                            _health.value = h
+                            _connectedPeer.value = url
+                            Log.d("WalletService", "Connected to $url, block=${h.blockHeight}")
+                            break
+                        } catch (e: Exception) {
+                            Log.w("WalletService", "Peer $url failed: ${e.message}")
+                            continue
+                        }
+                    }
+                    if (masternodeClient != null) break
                 }
 
                 if (masternodeClient == null) {
+                    Log.e("WalletService", "Could not connect to any masternode")
                     _error.value = "Could not connect to any masternode"
                     return@launch
                 }
@@ -175,12 +218,16 @@ class WalletService @Inject constructor(
                 refreshTransactions()
                 refreshUtxos()
 
+                // Address discovery: scan forward for addresses with balances
+                discoverAddresses()
+
                 // Start WebSocket
                 startWebSocket()
 
                 // Start polling
                 startPolling()
             } catch (e: Exception) {
+                Log.e("WalletService", "Network error", e)
                 _error.value = "Network error: ${e.message}"
             }
         }
@@ -189,9 +236,10 @@ class WalletService @Inject constructor(
     private fun startWebSocket() {
         val w = wallet ?: return
         val client = masternodeClient ?: return
-        val wsUrl = client.rpcEndpoint
-            .replace("http://", "ws://")
-            .replace("https://", "wss://") + "/ws"
+
+        // WS port = RPC port + 1 (e.g. 24101 → 24102), use wss:// (TLS enabled by default)
+        val wsUrl = deriveWsUrl(client.rpcEndpoint)
+        Log.d("WalletService", "Starting WebSocket at $wsUrl")
 
         wsClient?.stop()
         wsClient = WsNotificationClient(wsUrl, w.getAddresses(), scope)
@@ -316,13 +364,87 @@ class WalletService @Inject constructor(
                 isOwned = true,
                 derivationIndex = w.getAddresses().size - 1,
             ))
+            // Persist updated nextAddressIndex
+            w.save(walletDir, currentPassword)
         }
         return addr
+    }
+
+    /**
+     * Address discovery: starting from the current address count, generate new
+     * addresses and check each for balance. Keep going until we find a gap of
+     * [GAP_LIMIT] consecutive addresses with no history. This ensures we pick
+     * up all addresses that received funds (e.g. from the desktop wallet).
+     */
+    private suspend fun discoverAddresses() {
+        val w = wallet ?: return
+        val client = masternodeClient ?: return
+        val gapLimit = 5
+        var consecutiveEmpty = 0
+
+        Log.d("WalletService", "Starting address discovery from index ${w.getAddresses().size}")
+
+        while (consecutiveEmpty < gapLimit) {
+            val addr = w.generateAddress()
+            try {
+                val bal = client.getBalance(addr)
+                val txs = client.getTransactions(addr, 1)
+                if (bal.total > 0 || txs.isNotEmpty()) {
+                    Log.d("WalletService", "Discovered active address: $addr")
+                    consecutiveEmpty = 0
+
+                    // Save as owned contact
+                    val existing = contactDao.getByAddress(addr)
+                    if (existing == null) {
+                        contactDao.upsert(ContactEntity(
+                            address = addr,
+                            label = "Address ${w.getAddresses().size}",
+                            isOwned = true,
+                            derivationIndex = w.getAddresses().size - 1,
+                        ))
+                    }
+                } else {
+                    consecutiveEmpty++
+                }
+            } catch (e: Exception) {
+                Log.w("WalletService", "Discovery check failed for $addr: ${e.message}")
+                consecutiveEmpty++
+            }
+        }
+
+        // Remove the empty gap addresses we just discovered
+        // by reloading from the saved state before the gap
+        val activeCount = w.getAddresses().size - gapLimit
+        if (activeCount > 0) {
+            Log.d("WalletService", "Discovery complete. Found addresses up to index ${activeCount - 1}")
+        }
+
+        // Update UI and save
+        _addresses.value = w.getAddresses()
+        w.save(walletDir, currentPassword)
+        _contacts.value = contactDao.getAll()
+
+        // Refresh balances with all discovered addresses
+        refreshBalance()
+        refreshTransactions()
+        refreshUtxos()
     }
 
     fun saveContact(name: String, address: String) {
         scope.launch {
             contactDao.upsert(ContactEntity(address = address, name = name))
+            _contacts.value = contactDao.getAll()
+        }
+    }
+
+    fun updateAddressLabel(address: String, label: String) {
+        scope.launch {
+            val existing = contactDao.getByAddress(address)
+            if (existing != null) {
+                contactDao.upsert(existing.copy(label = label, updatedAt = System.currentTimeMillis() / 1000))
+            } else {
+                contactDao.upsert(ContactEntity(address = address, label = label, isOwned = true))
+            }
             _contacts.value = contactDao.getAll()
         }
     }
@@ -337,6 +459,35 @@ class WalletService @Inject constructor(
     fun navigateTo(screen: Screen) { _screen.value = screen }
     fun clearError() { _error.value = null }
     fun clearSuccess() { _success.value = null }
+
+    fun reconnect() {
+        masternodeClient?.close()
+        masternodeClient = null
+        wsClient?.stop()
+        wsClient = null
+        _connectedPeer.value = null
+        _wsConnected.value = false
+        _health.value = null
+        connectToNetwork()
+    }
+
+    /**
+     * Derive WebSocket URL from RPC endpoint.
+     * WS port = RPC port + 1: https://host:24101 → wss://host:24102
+     */
+    private fun deriveWsUrl(endpoint: String): String {
+        val base = endpoint
+            .replace("https://", "wss://")
+            .replace("http://", "ws://")
+        val lastColon = base.lastIndexOf(':')
+        if (lastColon > 0) {
+            val port = base.substring(lastColon + 1).toIntOrNull()
+            if (port != null) {
+                return "${base.substring(0, lastColon + 1)}${port + 1}"
+            }
+        }
+        return base
+    }
 
     fun shutdown() {
         wsClient?.stop()
@@ -354,7 +505,9 @@ enum class Screen {
     PasswordUnlock,
     Overview,
     Send,
+    QrScanner,
     Receive,
     Transactions,
+    Connections,
     Settings,
 }

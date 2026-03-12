@@ -37,6 +37,39 @@ object MnemonicHelper {
         false
     }
 
+    /** Lazily loaded BIP-39 English word list from the kotlin-bip39 library. */
+    private val wordList: List<String> by lazy {
+        try {
+            val paths = listOf(
+                "cash/z/ecc/android/bip39/en/words.txt",
+                "/cash/z/ecc/android/bip39/en/words.txt",
+            )
+            for (path in paths) {
+                val stream = MnemonicHelper::class.java.classLoader
+                    ?.getResourceAsStream(path)
+                if (stream != null) {
+                    val loaded = stream.bufferedReader().use { it.readLines() }
+                        .filter { it.isNotBlank() }
+                    if (loaded.size == 2048) return@lazy loaded
+                }
+            }
+            emptyList()
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private val wordSet: Set<String> by lazy { wordList.toSet() }
+
+    /** Whether the BIP-39 word list was successfully loaded for per-word validation. */
+    val hasWordList: Boolean get() = wordSet.isNotEmpty()
+
+    /** Check if a single word is a valid BIP-39 English word. */
+    fun isValidWord(word: String): Boolean {
+        if (!hasWordList || word.isBlank()) return false
+        return word.lowercase().trim() in wordSet
+    }
+
     /**
      * Derive a keypair at the full SLIP-0010 / BIP-44 path.
      * Path: m/44'/0'/account'/change'/index'  (all hardened, Ed25519 requirement)
