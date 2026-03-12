@@ -10,6 +10,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -25,6 +26,7 @@ fun SettingsScreen(service: WalletService) {
     val contacts by service.contacts.collectAsState()
     val addresses by service.addresses.collectAsState()
     val decimalPlaces by service.decimalPlaces.collectAsState()
+    val context = LocalContext.current
 
     var showAddContact by remember { mutableStateOf(false) }
     var contactName by remember { mutableStateOf("") }
@@ -222,6 +224,132 @@ fun SettingsScreen(service: WalletService) {
                         }
                     }
                 }
+            }
+
+            Spacer(Modifier.height(24.dp))
+
+            // Wallet Management
+            Text("Wallet", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+
+            var showMnemonic by remember { mutableStateOf(false) }
+            var showDeleteConfirm by remember { mutableStateOf(false) }
+            val mnemonic = if (showMnemonic) service.getMnemonic() else null
+
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    // View Recovery Phrase
+                    OutlinedButton(
+                        onClick = { showMnemonic = !showMnemonic },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(
+                            if (showMnemonic) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (showMnemonic) "Hide Recovery Phrase" else "View Recovery Phrase")
+                    }
+
+                    if (showMnemonic && mnemonic != null) {
+                        Spacer(Modifier.height(8.dp))
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f),
+                            ),
+                        ) {
+                            Column(Modifier.padding(12.dp)) {
+                                Text(
+                                    "Keep this phrase safe! Anyone with it can access your funds.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    mnemonic,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    // Export Backup
+                    OutlinedButton(
+                        onClick = {
+                            val file = service.getWalletFile()
+                            if (file != null) {
+                                val uri = androidx.core.content.FileProvider.getUriForFile(
+                                    context,
+                                    "${context.packageName}.fileprovider",
+                                    file,
+                                )
+                                val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                    type = "application/octet-stream"
+                                    putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(android.content.Intent.createChooser(intent, "Export Wallet Backup"))
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Export Wallet Backup")
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    // Delete Wallet
+                    OutlinedButton(
+                        onClick = { showDeleteConfirm = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error,
+                        ),
+                    ) {
+                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Delete Wallet")
+                    }
+                }
+            }
+
+            // Delete confirmation dialog
+            if (showDeleteConfirm) {
+                AlertDialog(
+                    onDismissRequest = { showDeleteConfirm = false },
+                    title = { Text("Delete Wallet?") },
+                    text = {
+                        Text(
+                            "This will delete your wallet and create an automatic backup. " +
+                                "Make sure you have saved your recovery phrase before proceeding.",
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                showDeleteConfirm = false
+                                service.deleteWallet()
+                            },
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error,
+                            ),
+                        ) {
+                            Text("Delete")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showDeleteConfirm = false }) {
+                            Text("Cancel")
+                        }
+                    },
+                )
             }
 
             Spacer(Modifier.height(24.dp))

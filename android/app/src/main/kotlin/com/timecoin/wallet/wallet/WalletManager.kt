@@ -119,6 +119,9 @@ class WalletManager private constructor(
         return tx
     }
 
+    /** Return the mnemonic recovery phrase (requires authentication first). */
+    fun getMnemonic(): String = mnemonic
+
     // ── Persistence ──
 
     /** Save encrypted wallet to the given directory. */
@@ -217,6 +220,30 @@ class WalletManager private constructor(
             if (!file.exists()) return false
             val content = file.readText()
             return content.contains("\"salt\"")
+        }
+
+        /** Create a timestamped backup of the wallet file. Returns the backup file, or null. */
+        fun backupWallet(dir: File, network: NetworkType): File? {
+            val source = File(walletDir(dir, network), WALLET_FILENAME)
+            if (!source.exists()) return null
+            val timestamp = java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmmss"))
+            val backupFile = File(walletDir(dir, network), "time-wallet-$timestamp.dat")
+            source.copyTo(backupFile, overwrite = false)
+            return backupFile
+        }
+
+        /** Get the wallet file for sharing/export. */
+        fun walletFile(dir: File, network: NetworkType): File? {
+            val file = File(walletDir(dir, network), WALLET_FILENAME)
+            return if (file.exists()) file else null
+        }
+
+        /** Delete the wallet file. Backs up first with a timestamp. */
+        fun deleteWallet(dir: File, network: NetworkType): Boolean {
+            backupWallet(dir, network)
+            val file = File(walletDir(dir, network), WALLET_FILENAME)
+            return file.delete()
         }
     }
 }
