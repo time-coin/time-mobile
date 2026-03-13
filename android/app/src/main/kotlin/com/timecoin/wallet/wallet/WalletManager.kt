@@ -122,9 +122,6 @@ class WalletManager private constructor(
         return tx
     }
 
-    /** Return the mnemonic recovery phrase (requires authentication first). */
-    fun getMnemonic(): String = mnemonic
-
     // ── Persistence ──
 
     /** Save encrypted wallet to the given directory. */

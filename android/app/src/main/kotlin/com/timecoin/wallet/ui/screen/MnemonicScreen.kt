@@ -8,6 +8,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Print
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -15,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.*
 import androidx.compose.ui.unit.dp
@@ -283,7 +285,20 @@ fun MnemonicSetupScreen(service: WalletService) {
         if (showPasswordSection) {
             Spacer(Modifier.height(24.dp))
 
+            val context = LocalContext.current
             val canContinue = effectiveMnemonic.isNotEmpty()
+
+            if (isGenerated) {
+                OutlinedButton(
+                    onClick = { printMnemonic(context, effectiveMnemonic) },
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                ) {
+                    Icon(Icons.Default.Print, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Print Recovery Phrase")
+                }
+                Spacer(Modifier.height(12.dp))
+            }
 
             Button(
                 onClick = { service.setPendingMnemonic(effectiveMnemonic) },
@@ -293,6 +308,33 @@ fun MnemonicSetupScreen(service: WalletService) {
                 Text("Continue", fontSize = 18.sp)
             }
         }
+    }
+}
+
+/** Print the mnemonic via Android PrintManager — no file saved to disk. */
+private fun printMnemonic(context: android.content.Context, mnemonic: String) {
+    val printManager = context.getSystemService(android.content.Context.PRINT_SERVICE) as android.print.PrintManager
+    val words = mnemonic.split(" ")
+    val rows = words.mapIndexed { i, w -> "<tr><td>${i + 1}.</td><td>$w</td></tr>" }.joinToString("")
+    val html = """
+        <html><body style="font-family:monospace;padding:40px;">
+        <h2>TIME Coin — Recovery Phrase</h2>
+        <p style="color:red;font-weight:bold;">
+            Keep this document safe. Anyone with these words can access your funds.
+        </p>
+        <table style="font-size:16pt;border-collapse:collapse;margin-top:20px;">
+        $rows
+        </table>
+        <p style="margin-top:30px;font-size:10pt;color:#666;">
+            Date: ${java.time.LocalDate.now()}
+        </p>
+        </body></html>
+    """.trimIndent()
+
+    val webView = android.webkit.WebView(context)
+    webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+    webView.createPrintDocumentAdapter("TIME-Recovery-Phrase").let { adapter ->
+        printManager.print("TIME Recovery Phrase", adapter, null)
     }
 }
 

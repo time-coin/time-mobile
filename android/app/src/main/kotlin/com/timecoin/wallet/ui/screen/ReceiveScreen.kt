@@ -79,21 +79,18 @@ fun ReceiveScreen(service: WalletService) {
         ) {
             // ── Fixed top section: QR code, address, copy button ──
             Column(
-                modifier = Modifier.padding(top = 4.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 if (currentAddress.isNotEmpty()) {
                     val qrBitmap = remember(currentAddress) { generateQr(currentAddress) }
                     qrBitmap?.let { bmp ->
-                        Card {
-                            Image(
-                                bitmap = bmp.asImageBitmap(),
-                                contentDescription = "QR Code for $currentAddress",
-                                modifier = Modifier.size(200.dp).padding(12.dp),
-                            )
-                        }
+                        Image(
+                            bitmap = bmp.asImageBitmap(),
+                            contentDescription = "QR Code for $currentAddress",
+                            modifier = Modifier.size(180.dp),
+                        )
                     }
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(4.dp))
 
                     Card(
                         modifier = Modifier.fillMaxWidth(),
@@ -106,10 +103,10 @@ fun ReceiveScreen(service: WalletService) {
                             style = MaterialTheme.typography.bodySmall,
                             textAlign = TextAlign.Center,
                             fontWeight = FontWeight.Medium,
-                            modifier = Modifier.padding(12.dp).fillMaxWidth(),
+                            modifier = Modifier.padding(10.dp).fillMaxWidth(),
                         )
                     }
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(6.dp))
 
                     Button(
                         onClick = { clipboardManager.setText(AnnotatedString(currentAddress)) },
@@ -122,7 +119,7 @@ fun ReceiveScreen(service: WalletService) {
                 }
             }
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
 
             // ── Scrollable address list ──
             Row(

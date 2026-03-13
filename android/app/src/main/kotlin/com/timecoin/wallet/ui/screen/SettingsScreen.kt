@@ -214,52 +214,10 @@ fun SettingsScreen(service: WalletService) {
             Text("Wallet", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
 
-            var showMnemonic by remember { mutableStateOf(false) }
             var showDeleteConfirm by remember { mutableStateOf(false) }
-            val mnemonic = if (showMnemonic) service.getMnemonic() else null
 
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
-                    // View Recovery Phrase
-                    OutlinedButton(
-                        onClick = { showMnemonic = !showMnemonic },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(
-                            if (showMnemonic) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(if (showMnemonic) "Hide Recovery Phrase" else "View Recovery Phrase")
-                    }
-
-                    if (showMnemonic && mnemonic != null) {
-                        Spacer(Modifier.height(8.dp))
-                        Card(
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f),
-                            ),
-                        ) {
-                            Column(Modifier.padding(12.dp)) {
-                                Text(
-                                    "Keep this phrase safe! Anyone with it can access your funds.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error,
-                                    fontWeight = FontWeight.Bold,
-                                )
-                                Spacer(Modifier.height(8.dp))
-                                Text(
-                                    mnemonic,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Medium,
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(Modifier.height(8.dp))
-
                     // Export Backup
                     OutlinedButton(
                         onClick = {

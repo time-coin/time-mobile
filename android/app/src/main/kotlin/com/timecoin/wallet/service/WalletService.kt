@@ -499,9 +499,6 @@ class WalletService @Inject constructor(
     fun clearError() { _error.value = null }
     fun clearSuccess() { _success.value = null }
 
-    /** Return the mnemonic recovery phrase. Wallet must be loaded. */
-    fun getMnemonic(): String? = wallet?.getMnemonic()
-
     /** Get the wallet file for export/sharing. */
     fun getWalletFile(): java.io.File? {
         val network = if (_isTestnet.value) NetworkType.Testnet else NetworkType.Mainnet
