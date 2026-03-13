@@ -22,8 +22,14 @@ import com.timecoin.wallet.ui.component.formatSatoshis
 @Composable
 fun TransactionHistoryScreen(service: WalletService) {
     val transactions by service.transactions.collectAsState()
+    val contacts by service.contacts.collectAsState()
     var searchQuery by remember { mutableStateOf("") }
     var selectedTx by remember { mutableStateOf<TransactionRecord?>(null) }
+
+    // Build address → label map from contacts
+    val labelMap = remember(contacts) {
+        contacts.associate { it.address to it.label.ifEmpty { it.name }.ifEmpty { null } }
+    }
 
     val filtered = if (searchQuery.isBlank()) transactions
     else transactions.filter {
@@ -84,6 +90,7 @@ fun TransactionHistoryScreen(service: WalletService) {
                     items(filtered, key = { it.txid }) { tx ->
                         TransactionDetailRow(
                             tx = tx,
+                            label = labelMap[tx.address],
                             onClick = {
                                 selectedTx = if (selectedTx?.txid == tx.txid) null else tx
                             },
@@ -108,6 +115,7 @@ fun TransactionHistoryScreen(service: WalletService) {
 @Composable
 fun TransactionDetailRow(
     tx: TransactionRecord,
+    label: String?,
     onClick: () -> Unit,
     isExpanded: Boolean,
 ) {
@@ -131,7 +139,7 @@ fun TransactionDetailRow(
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    text = if (tx.isSend) "Sent" else "Received",
+                    text = if (tx.isSend) "Sent" else (label ?: "Received"),
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                 )
