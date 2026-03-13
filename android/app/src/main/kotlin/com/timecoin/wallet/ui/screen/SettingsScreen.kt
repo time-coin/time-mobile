@@ -218,6 +218,18 @@ fun SettingsScreen(service: WalletService) {
 
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
+                    // Lock Wallet
+                    OutlinedButton(
+                        onClick = { service.lockWallet() },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Lock Wallet")
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
                     // Export Backup
                     OutlinedButton(
                         onClick = {

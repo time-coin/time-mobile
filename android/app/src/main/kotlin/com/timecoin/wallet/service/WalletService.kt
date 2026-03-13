@@ -499,6 +499,29 @@ class WalletService @Inject constructor(
     fun clearError() { _error.value = null }
     fun clearSuccess() { _success.value = null }
 
+    /** Lock the wallet: disconnect, clear sensitive state, return to PIN screen. */
+    fun lockWallet() {
+        masternodeClient?.close()
+        masternodeClient = null
+        wsClient?.stop()
+        wsClient = null
+        pollJob?.cancel()
+        pollJob = null
+
+        wallet = null
+        currentPassword = null
+        _walletLoaded.value = false
+        _connectedPeer.value = null
+        _wsConnected.value = false
+        _health.value = null
+        _balance.value = Balance()
+        _transactions.value = emptyList()
+        _utxos.value = emptyList()
+        _addresses.value = emptyList()
+        _utxoSynced.value = false
+        _screen.value = Screen.PinUnlock
+    }
+
     /** Get the wallet file for export/sharing. */
     fun getWalletFile(): java.io.File? {
         val network = if (_isTestnet.value) NetworkType.Testnet else NetworkType.Mainnet
