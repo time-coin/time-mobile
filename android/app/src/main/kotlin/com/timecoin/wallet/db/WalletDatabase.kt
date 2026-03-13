@@ -8,6 +8,8 @@ data class ContactEntity(
     @PrimaryKey val address: String,
     val label: String = "",
     val name: String = "",
+    val email: String = "",
+    val phone: String = "",
     val isOwned: Boolean = false,
     val derivationIndex: Int? = null,
     val createdAt: Long = System.currentTimeMillis() / 1000,
@@ -96,7 +98,7 @@ interface SettingDao {
 
 @Database(
     entities = [ContactEntity::class, TransactionEntity::class, SettingEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 @TypeConverters()

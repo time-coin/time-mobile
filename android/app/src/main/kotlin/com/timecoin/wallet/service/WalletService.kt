@@ -67,6 +67,9 @@ class WalletService @Inject constructor(
     private val _peers = MutableStateFlow<List<String>>(emptyList())
     val peers: StateFlow<List<String>> = _peers
 
+    private val _peerInfos = MutableStateFlow<List<PeerInfo>>(emptyList())
+    val peerInfos: StateFlow<List<PeerInfo>> = _peerInfos
+
     private val _connectedPeer = MutableStateFlow<String?>(null)
     val connectedPeer: StateFlow<String?> = _connectedPeer
 
@@ -84,6 +87,24 @@ class WalletService @Inject constructor(
         _scannedAddress.value = null
     }
 
+    /** Contact info extracted from shared text (SMS, etc.) */
+    data class SharedContact(
+        val address: String,
+        val phone: String = "",
+        val rawText: String = "",
+    )
+
+    private val _sharedContact = MutableStateFlow<SharedContact?>(null)
+    val sharedContact: StateFlow<SharedContact?> = _sharedContact
+
+    fun setSharedContact(contact: SharedContact) {
+        _sharedContact.value = contact
+    }
+
+    fun clearSharedContact() {
+        _sharedContact.value = null
+    }
+
     private val _success = MutableStateFlow<String?>(null)
     val success: StateFlow<String?> = _success
 
@@ -95,6 +116,12 @@ class WalletService @Inject constructor(
 
     private val _selectedTransaction = MutableStateFlow<TransactionRecord?>(null)
     val selectedTransaction: StateFlow<TransactionRecord?> = _selectedTransaction
+
+    private val _reindexing = MutableStateFlow(false)
+    val reindexing: StateFlow<Boolean> = _reindexing
+
+    private val _backups = MutableStateFlow<List<java.io.File>>(emptyList())
+    val backups: StateFlow<List<java.io.File>> = _backups
 
     // ── Internal state ──
     private var wallet: WalletManager? = null
@@ -216,67 +243,85 @@ class WalletService @Inject constructor(
         scope.launch {
             try {
                 val isTestnet = _isTestnet.value
-                Log.d("WalletService", "Connecting to network, isTestnet=$isTestnet")
-                val peers = PeerDiscovery.fetchPeers(isTestnet, walletDir)
-                Log.d("WalletService", "Discovered ${peers.size} peers: $peers")
-                _peers.value = peers
-                if (peers.isEmpty()) {
+                Log.d(TAG, "Connecting to network, isTestnet=$isTestnet")
+
+                // Load manual config
+                val config = ConfigManager.load(walletDir)
+                val manualEndpoints = ConfigManager.manualEndpoints(
+                    config.copy(testnet = isTestnet)
+                )
+                val rpcCreds = ConfigManager.rpcCredentials(config)
+
+                // Discover and rank all peers (parallel probe + gossip + consensus)
+                val rankedPeers = PeerDiscovery.discoverAndRank(
+                    isTestnet = isTestnet,
+                    manualEndpoints = manualEndpoints,
+                    credentials = rpcCreds,
+                    cacheDir = walletDir,
+                )
+
+                _peerInfos.value = rankedPeers
+                _peers.value = rankedPeers.map { it.endpoint }
+
+                if (rankedPeers.isEmpty()) {
                     _error.value = "No masternodes found"
                     return@launch
                 }
 
-                // Try peers until one responds (try HTTPS first, then HTTP fallback)
-                for (peer in peers) {
-                    // Derive both HTTPS and HTTP URLs for the peer
-                    val peerUrls = if (peer.startsWith("https://")) {
-                        listOf(peer, peer.replaceFirst("https://", "http://"))
-                    } else if (peer.startsWith("http://")) {
-                        listOf(peer.replaceFirst("http://", "https://"), peer)
-                    } else {
-                        listOf("https://$peer", "http://$peer")
-                    }
+                Log.d(TAG, "Ranked ${rankedPeers.size} peers, " +
+                    "${rankedPeers.count { it.isHealthy }} healthy")
 
-                    for (url in peerUrls) {
-                        try {
-                            Log.d("WalletService", "Trying peer: $url")
-                            val client = MasternodeClient(url)
-                            val h = client.healthCheck()
-                            masternodeClient = client
-                            _health.value = h
-                            _connectedPeer.value = url
-                            Log.d("WalletService", "Connected to $url, block=${h.blockHeight}")
-                            break
-                        } catch (e: Exception) {
-                            Log.w("WalletService", "Peer $url failed: ${e.message}")
-                            continue
-                        }
-                    }
-                    if (masternodeClient != null) break
-                }
-
-                if (masternodeClient == null) {
-                    Log.e("WalletService", "Could not connect to any masternode")
-                    _error.value = "Could not connect to any masternode"
+                // Connect to the best healthy peer
+                val healthyPeers = rankedPeers.filter { it.isHealthy }
+                if (healthyPeers.isEmpty()) {
+                    _error.value = "No healthy masternodes found"
                     return@launch
                 }
 
-                // Initial data fetch
-                refreshBalance()
-                refreshTransactions()
-                refreshUtxos()
+                for (peer in healthyPeers) {
+                    if (tryConnect(peer.endpoint, rpcCreds)) {
+                        // Mark the active peer
+                        _peerInfos.value = rankedPeers.map {
+                            it.copy(isActive = it.endpoint == peer.endpoint)
+                        }
+                        return@launch
+                    }
+                }
 
-                // Address discovery: scan forward for addresses with balances
-                discoverAddresses()
-
-                // Start WebSocket
-                startWebSocket()
-
-                // Start polling
-                startPolling()
+                Log.e(TAG, "Could not connect to any masternode")
+                _error.value = "Could not connect to any masternode"
             } catch (e: Exception) {
-                Log.e("WalletService", "Network error", e)
+                Log.e(TAG, "Network error", e)
                 _error.value = "Network error: ${e.message}"
             }
+        }
+    }
+
+    /** Try to connect to a single peer endpoint. Returns true if successful. */
+    private suspend fun tryConnect(
+        url: String,
+        credentials: Pair<String, String>? = null,
+    ): Boolean {
+        return try {
+            Log.d(TAG, "Trying peer: $url")
+            val client = MasternodeClient(url, credentials)
+            val h = client.healthCheck()
+            masternodeClient = client
+            _health.value = h
+            _connectedPeer.value = url
+            Log.d(TAG, "Connected to $url, block=${h.blockHeight}")
+
+            // Initial data fetch
+            refreshBalance()
+            refreshTransactions()
+            refreshUtxos()
+            discoverAddresses()
+            startWebSocket()
+            startPolling()
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "Peer $url failed: ${e.message}")
+            false
         }
     }
 
@@ -353,7 +398,55 @@ class WalletService @Inject constructor(
                 Log.d(TAG, "refreshTransactions: ${rawTxs.size} raw entries")
 
                 val ownAddresses = w.getAddresses().toSet()
-                val processed = processTransactions(rawTxs, ownAddresses)
+
+                // Expand consolidate (self-send) entries by fetching per-output
+                // details from gettransaction. This gives processTransactions
+                // individual outputs so it can identify the real send amount
+                // vs change and create proper send + receive + fee entries.
+                val consolidateTxs = rawTxs.filter { it.isConsolidate }
+                val normalTxs = rawTxs.filter { !it.isConsolidate }
+                val expandedTxs = mutableListOf<TransactionRecord>()
+
+                for (ctx in consolidateTxs) {
+                    try {
+                        val (fee, outputs) = client.getTransactionDetail(ctx.txid)
+                        Log.d(TAG, "Expanding consolidate txid=${ctx.txid.take(12)}.. " +
+                            "${outputs.size} outputs, fee=$fee")
+
+                        // Create a send entry for each output (processTransactions
+                        // will detect self-send and pick smallest as "real" send)
+                        for (out in outputs) {
+                            expandedTxs.add(TransactionRecord(
+                                txid = ctx.txid,
+                                vout = out.index,
+                                isSend = true,
+                                address = out.address,
+                                amount = out.value,
+                                fee = fee,
+                                timestamp = ctx.timestamp,
+                                status = ctx.status,
+                                blockHash = ctx.blockHash,
+                                blockHeight = ctx.blockHeight,
+                                confirmations = ctx.confirmations,
+                            ))
+                            Log.d(TAG, "  output[${out.index}]: ${out.value} → ${out.address.take(16)}..")
+                        }
+                    } catch (e: Exception) {
+                        // Fallback: show as fee-only if gettransaction fails
+                        Log.w(TAG, "Failed to expand consolidate ${ctx.txid.take(12)}..", e)
+                        if (ctx.fee > 0) {
+                            expandedTxs.add(ctx.copy(
+                                isFee = true,
+                                isConsolidate = false,
+                                address = "Self-send fee",
+                                amount = ctx.fee,
+                            ))
+                        }
+                    }
+                }
+
+                val allTxs = normalTxs + expandedTxs
+                val processed = processTransactions(allTxs, ownAddresses)
                 Log.d(TAG, "refreshTransactions: ${processed.size} after change filtering")
 
                 _transactions.value = processed
@@ -389,6 +482,12 @@ class WalletService @Inject constructor(
         rawTxs: List<TransactionRecord>,
         ownAddresses: Set<String>,
     ): List<TransactionRecord> {
+        Log.d(TAG, "processTransactions: ${rawTxs.size} raw entries, ${ownAddresses.size} own addresses")
+        for (tx in rawTxs) {
+            Log.d(TAG, "  RAW: txid=${tx.txid.take(12)}.. ${if (tx.isSend) "SEND" else "RECV"} " +
+                "amount=${tx.amount} fee=${tx.fee} addr=${tx.address.take(16)}.. vout=${tx.vout}")
+        }
+
         // 1. Deduplicate by (txid, isSend, vout)
         val seen = mutableSetOf<String>()
         val deduped = rawTxs.filter { seen.add(it.uniqueKey) }
@@ -410,12 +509,18 @@ class WalletService @Inject constructor(
             if (externalDests.isNotEmpty()) {
                 // Normal send: external addresses are the real destinations
                 realSendDests[txid] = externalDests.map { it.address }.toMutableSet()
+                Log.d(TAG, "  NORMAL SEND txid=${txid.take(12)}.. → ${externalDests.size} external dests")
             } else {
                 // Send-to-self: all destinations are ours. Keep the smallest
                 // non-zero as the "real" send; the rest are change.
                 val sorted = sends.filter { it.amount > 0 }.sortedBy { it.amount }
                 if (sorted.isNotEmpty()) {
                     realSendDests[txid] = mutableSetOf(sorted.first().address)
+                    Log.d(TAG, "  SELF-SEND txid=${txid.take(12)}.. picked smallest amount=${sorted.first().amount} " +
+                        "addr=${sorted.first().address.take(16)}.. (${sends.size} total sends)")
+                    for (s in sorted) {
+                        Log.d(TAG, "    candidate: amount=${s.amount} addr=${s.address.take(16)}.. vout=${s.vout}")
+                    }
                 }
             }
         }
@@ -447,12 +552,19 @@ class WalletService @Inject constructor(
             if (realDests != null && tx.address in realDests && tx.txid !in keptSelfReceive) {
                 // Send-to-self: keep one receive matching the send destination
                 keptSelfReceive.add(tx.txid)
+                Log.d(TAG, "Keeping self-receive: txid=${tx.txid.take(12)}.. amount=${tx.amount} addr=${tx.address.take(16)}..")
                 return@filter true
             }
 
             // Change output — filter it out
             Log.d(TAG, "Filtering change output: txid=${tx.txid.take(12)}.. amount=${tx.amount} addr=${tx.address.take(12)}..")
             false
+        }
+
+        Log.d(TAG, "After filter: ${filtered.size} entries")
+        for (tx in filtered) {
+            Log.d(TAG, "  KEPT: txid=${tx.txid.take(12)}.. ${if (tx.isSend) "SEND" else "RECV"} " +
+                "amount=${tx.amount} fee=${tx.fee} addr=${tx.address.take(16)}.. vout=${tx.vout}")
         }
 
         // 4. Create separate fee entries for sends
@@ -477,6 +589,7 @@ class WalletService @Inject constructor(
                         confirmations = tx.confirmations,
                     )
                 )
+                Log.d(TAG, "  FEE: txid=${tx.txid.take(12)}.. amount=${tx.fee}")
             }
         }
 
@@ -491,6 +604,7 @@ class WalletService @Inject constructor(
                 if (send.address !in realDests) continue
                 val hasReceive = filtered.any { it.txid == txid && !it.isSend && !it.isFee }
                 if (!hasReceive) {
+                    Log.d(TAG, "  SYNTH RECV: txid=${txid.take(12)}.. amount=${send.amount} addr=${send.address.take(16)}..")
                     synthReceives.add(
                         TransactionRecord(
                             txid = txid,
@@ -506,12 +620,22 @@ class WalletService @Inject constructor(
                             confirmations = send.confirmations,
                         )
                     )
+                } else {
+                    Log.d(TAG, "  RECV exists for self-send txid=${txid.take(12)}.. (no synth needed)")
                 }
             }
         }
 
+        val result = filtered + feeEntries + synthReceives
+        Log.d(TAG, "processTransactions FINAL: ${result.size} entries")
+        for (tx in result) {
+            Log.d(TAG, "  FINAL: txid=${tx.txid.take(12)}.. " +
+                "${if (tx.isFee) "FEE" else if (tx.isSend) "SEND" else "RECV"} " +
+                "amount=${tx.amount} addr=${tx.address.take(16)}..")
+        }
+
         // 6. Combine and sort by timestamp descending
-        return (filtered + feeEntries + synthReceives).sortedByDescending { it.timestamp }
+        return result.sortedByDescending { it.timestamp }
     }
 
     fun refreshUtxos() {
@@ -638,9 +762,24 @@ class WalletService @Inject constructor(
         refreshUtxos()
     }
 
-    fun saveContact(name: String, address: String) {
+    fun saveContact(name: String, address: String, email: String = "", phone: String = "") {
         scope.launch {
-            contactDao.upsert(ContactEntity(address = address, name = name))
+            val existing = contactDao.getByAddress(address)
+            if (existing != null) {
+                contactDao.upsert(existing.copy(
+                    name = name,
+                    email = email,
+                    phone = phone,
+                    updatedAt = System.currentTimeMillis() / 1000,
+                ))
+            } else {
+                contactDao.upsert(ContactEntity(
+                    address = address,
+                    name = name,
+                    email = email,
+                    phone = phone,
+                ))
+            }
             _contacts.value = contactDao.getAll()
         }
     }
@@ -702,8 +841,8 @@ class WalletService @Inject constructor(
         return WalletManager.walletFile(walletDir, network)
     }
 
-    /** Delete current wallet, auto-backup first, reset all state. */
-    fun deleteWallet() {
+    /** Delete current wallet, auto-backup first, reset all state. Returns success. */
+    fun deleteWallet(): Boolean {
         val network = if (_isTestnet.value) NetworkType.Testnet else NetworkType.Mainnet
 
         // Disconnect
@@ -715,7 +854,18 @@ class WalletService @Inject constructor(
         pollJob = null
 
         // Delete (with auto-backup)
-        WalletManager.deleteWallet(walletDir, network)
+        val deleted = WalletManager.deleteWallet(walletDir, network)
+        Log.d(TAG, "deleteWallet: file deleted=$deleted")
+
+        // Clear database
+        scope.launch {
+            try {
+                transactionDao.deleteAll()
+                Log.d(TAG, "deleteWallet: cleared transaction cache")
+            } catch (e: Exception) {
+                Log.e(TAG, "deleteWallet: failed to clear DB", e)
+            }
+        }
 
         // Reset state
         wallet = null
@@ -730,6 +880,115 @@ class WalletService @Inject constructor(
         _addresses.value = emptyList()
         _utxoSynced.value = false
         _screen.value = Screen.Welcome
+
+        if (!deleted) {
+            _error.value = "Could not delete wallet file. Please try again."
+        }
+        return deleted
+    }
+
+    /** Reindex: erase cached UTXOs and transactions, then resync from the masternode. */
+    fun reindexWallet() {
+        scope.launch {
+            _reindexing.value = true
+            Log.d(TAG, "reindexWallet: clearing cached data and resyncing")
+            try {
+                // Clear DB caches
+                transactionDao.deleteAll()
+
+                // Reset in-memory state
+                _balance.value = Balance()
+                _transactions.value = emptyList()
+                _utxos.value = emptyList()
+                _utxoSynced.value = false
+
+                wallet?.setUtxos(emptyList())
+
+                // Resync from masternode
+                if (masternodeClient != null) {
+                    refreshBalance()
+                    refreshTransactions()
+                    refreshUtxos()
+                    discoverAddresses()
+                    _success.value = "Wallet reindexed successfully"
+                } else {
+                    _error.value = "Not connected to masternode — reconnecting"
+                    connectToNetwork()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "reindexWallet failed", e)
+                _error.value = "Reindex failed: ${e.message}"
+            } finally {
+                _reindexing.value = false
+            }
+        }
+    }
+
+    /** List available wallet backups for the current network. */
+    fun refreshBackups() {
+        val network = if (_isTestnet.value) NetworkType.Testnet else NetworkType.Mainnet
+        _backups.value = WalletManager.listBackups(walletDir, network)
+    }
+
+    /** Create a manual backup now. */
+    fun createBackup(): java.io.File? {
+        val network = if (_isTestnet.value) NetworkType.Testnet else NetworkType.Mainnet
+        val file = WalletManager.backupWallet(walletDir, network)
+        if (file != null) {
+            _success.value = "Backup created: ${file.name}"
+            refreshBackups()
+        }
+        return file
+    }
+
+    /** Restore a wallet from a backup file. */
+    @Suppress("UNUSED_PARAMETER")
+    fun restoreBackup(backupFile: java.io.File, password: String? = null) {
+        val network = if (_isTestnet.value) NetworkType.Testnet else NetworkType.Mainnet
+
+        // Disconnect first
+        masternodeClient?.close()
+        masternodeClient = null
+        wsClient?.stop()
+        wsClient = null
+        pollJob?.cancel()
+        pollJob = null
+
+        val restored = WalletManager.restoreBackup(walletDir, network, backupFile)
+        if (restored) {
+            _success.value = "Backup restored. Reloading wallet..."
+            scope.launch {
+                transactionDao.deleteAll()
+            }
+            // Reset state, user will need to unlock
+            wallet = null
+            currentPassword = null
+            _walletLoaded.value = false
+            _balance.value = Balance()
+            _transactions.value = emptyList()
+            _utxos.value = emptyList()
+            _addresses.value = emptyList()
+            _utxoSynced.value = false
+            _screen.value = Screen.PasswordUnlock
+        } else {
+            _error.value = "Failed to restore backup"
+        }
+    }
+
+    /** Delete a specific backup file. */
+    fun deleteBackup(file: java.io.File): Boolean {
+        val deleted = file.delete()
+        if (deleted) refreshBackups()
+        return deleted
+    }
+
+    /** Get the raw time.conf content for editing. */
+    fun getConfigText(): String = ConfigManager.readRaw(walletDir)
+
+    /** Save raw time.conf content. */
+    fun saveConfigText(content: String) {
+        ConfigManager.writeRaw(walletDir, content)
+        _success.value = "Configuration saved"
     }
 
     fun reconnect() {
@@ -742,7 +1001,41 @@ class WalletService @Inject constructor(
         _connectedPeer.value = null
         _wsConnected.value = false
         _health.value = null
+        _peerInfos.value = emptyList()
         connectToNetwork()
+    }
+
+    /** Switch to a specific peer endpoint (manual peer selection from UI). */
+    fun switchPeer(endpoint: String) {
+        scope.launch {
+            try {
+                masternodeClient?.close()
+                masternodeClient = null
+                wsClient?.stop()
+                wsClient = null
+                pollJob?.cancel()
+                pollJob = null
+                _connectedPeer.value = null
+                _wsConnected.value = false
+
+                val config = ConfigManager.load(walletDir)
+                val rpcCreds = ConfigManager.rpcCredentials(config)
+
+                if (tryConnect(endpoint, rpcCreds)) {
+                    _peerInfos.value = _peerInfos.value.map {
+                        it.copy(isActive = it.endpoint == endpoint)
+                    }
+                    _success.value = "Switched to ${endpoint.substringAfter("://")}"
+                } else {
+                    _error.value = "Could not connect to $endpoint"
+                    // Reconnect to any available peer
+                    connectToNetwork()
+                }
+            } catch (e: Exception) {
+                _error.value = "Switch failed: ${e.message}"
+                connectToNetwork()
+            }
+        }
     }
 
     /**

@@ -1,5 +1,6 @@
 package com.timecoin.wallet.ui.screen
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -9,10 +10,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.timecoin.wallet.model.TransactionRecord
+import com.timecoin.wallet.model.TransactionStatus
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
 import com.timecoin.wallet.ui.component.formatTime
@@ -23,18 +26,33 @@ import com.timecoin.wallet.ui.component.formatSatoshis
 fun TransactionHistoryScreen(service: WalletService) {
     val transactions by service.transactions.collectAsState()
     val contacts by service.contacts.collectAsState()
+    val decimalPlaces by service.decimalPlaces.collectAsState()
     var searchQuery by remember { mutableStateOf("") }
-    var selectedTx by remember { mutableStateOf<TransactionRecord?>(null) }
 
-    // Build address → label map from contacts
+    // Build address → label map from contacts (name preferred, then label)
     val labelMap = remember(contacts) {
-        contacts.associate { it.address to it.label.ifEmpty { it.name }.ifEmpty { null } }
+        contacts.associate { it.address to it.name.ifEmpty { it.label }.ifEmpty { null } }
     }
 
-    val filtered = if (searchQuery.isBlank()) transactions
-    else transactions.filter {
-        it.address.contains(searchQuery, ignoreCase = true) ||
-            it.txid.contains(searchQuery, ignoreCase = true)
+    val filtered = remember(searchQuery, transactions, labelMap, decimalPlaces) {
+        if (searchQuery.isBlank()) transactions
+        else {
+            val q = searchQuery.trim()
+            transactions.filter { tx ->
+                tx.address.contains(q, ignoreCase = true) ||
+                    tx.txid.contains(q, ignoreCase = true) ||
+                    // Search by contact name / label
+                    labelMap[tx.address]?.contains(q, ignoreCase = true) == true ||
+                    // Search by amount (formatted string)
+                    formatSatoshis(tx.amount, decimalPlaces).contains(q) ||
+                    // Search by type
+                    (q.equals("fee", ignoreCase = true) && tx.isFee) ||
+                    (q.equals("sent", ignoreCase = true) && tx.isSend && !tx.isFee) ||
+                    (q.equals("send", ignoreCase = true) && tx.isSend && !tx.isFee) ||
+                    (q.equals("received", ignoreCase = true) && !tx.isSend && !tx.isFee) ||
+                    (q.equals("receive", ignoreCase = true) && !tx.isSend && !tx.isFee)
+            }
+        }
     }
 
     Scaffold(
@@ -55,13 +73,13 @@ fun TransactionHistoryScreen(service: WalletService) {
                 .padding(padding),
         ) {
             // Search bar
-            OutlinedTextField(
+            TextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
-                placeholder = { Text("Search by address or txid") },
+                placeholder = { Text("Search name, address, amount, txid…") },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 singleLine = true,
                 trailingIcon = {
@@ -71,6 +89,11 @@ fun TransactionHistoryScreen(service: WalletService) {
                         }
                     }
                 },
+                colors = TextFieldDefaults.colors(
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                ),
+                shape = MaterialTheme.shapes.medium,
             )
 
             if (filtered.isEmpty()) {
@@ -86,28 +109,22 @@ fun TransactionHistoryScreen(service: WalletService) {
                     )
                 }
             } else {
-                LazyColumn {
-                    items(filtered, key = { it.txid }) { tx ->
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    items(filtered, key = { it.uniqueKey }) { tx ->
                         TransactionDetailRow(
                             tx = tx,
                             label = labelMap[tx.address],
-                            onClick = {
-                                selectedTx = if (selectedTx?.txid == tx.txid) null else tx
-                            },
-                            isExpanded = selectedTx?.txid == tx.txid,
+                            decimalPlaces = decimalPlaces,
+                            onClick = { service.showTransaction(tx) },
+                            isExpanded = false,
                         )
                         @Suppress("DEPRECATION")
-                    Divider()
+                        Divider()
                     }
                 }
             }
-        }
-    }
-
-    // Transaction detail dialog
-    selectedTx?.let { tx ->
-        if (selectedTx?.txid == tx.txid) {
-            // Shown inline via expansion instead
         }
     }
 }
@@ -116,12 +133,14 @@ fun TransactionHistoryScreen(service: WalletService) {
 fun TransactionDetailRow(
     tx: TransactionRecord,
     label: String?,
+    decimalPlaces: Int,
     onClick: () -> Unit,
     isExpanded: Boolean,
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         Row(
@@ -129,35 +148,67 @@ fun TransactionDetailRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                imageVector = if (tx.isSend) Icons.Default.ArrowUpward
-                              else Icons.Default.ArrowDownward,
+                imageVector = when {
+                    tx.isFee -> Icons.Default.LocalAtm
+                    tx.isSend -> Icons.Default.ArrowUpward
+                    else -> Icons.Default.ArrowDownward
+                },
                 contentDescription = null,
-                tint = if (tx.isSend) MaterialTheme.colorScheme.error
-                       else MaterialTheme.colorScheme.primary,
+                tint = when {
+                    tx.isFee -> Color(0xFFFFA500)
+                    tx.isSend -> MaterialTheme.colorScheme.error
+                    else -> MaterialTheme.colorScheme.primary
+                },
                 modifier = Modifier.size(24.dp),
             )
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    text = if (tx.isSend) "Sent" else (label ?: "Received"),
+                    text = when {
+                        tx.isFee -> "Network Fee"
+                        tx.isSend -> label ?: "Sent"
+                        else -> label ?: "Received"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                 )
                 Text(
-                    text = tx.address,
+                    text = if (tx.isFee) tx.txid.take(12) + "..." + tx.txid.takeLast(4)
+                           else tx.address,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            // Status icon
+            val statusIcon = when (tx.status) {
+                TransactionStatus.Approved -> Icons.Default.CheckCircle
+                TransactionStatus.Pending -> Icons.Default.HourglassEmpty
+                TransactionStatus.Declined -> Icons.Default.Cancel
+            }
+            val statusColor = when (tx.status) {
+                TransactionStatus.Approved -> Color(0xFF00C850)
+                TransactionStatus.Pending -> Color(0xFFFFA500)
+                TransactionStatus.Declined -> Color(0xFFFF3B30)
+            }
+            Icon(
+                imageVector = statusIcon,
+                contentDescription = tx.status.name,
+                tint = statusColor,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.width(6.dp))
             Column(horizontalAlignment = Alignment.End) {
                 Text(
-                    text = "${if (tx.isSend) "-" else "+"}${formatSatoshis(tx.amount)} TIME",
+                    text = "${if (tx.isSend || tx.isFee) "-" else "+"}${formatSatoshis(tx.amount, decimalPlaces)} TIME",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
-                    color = if (tx.isSend) MaterialTheme.colorScheme.error
-                           else MaterialTheme.colorScheme.primary,
+                    color = when {
+                        tx.isFee -> Color(0xFFFFA500)
+                        tx.isSend -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.primary
+                    },
                 )
                 Text(
                     text = formatTime(tx.timestamp),
@@ -166,63 +217,12 @@ fun TransactionDetailRow(
                 )
             }
             Spacer(Modifier.width(4.dp))
-            IconButton(onClick = onClick, modifier = Modifier.size(24.dp)) {
-                Icon(
-                    imageVector = if (isExpanded) Icons.Default.ExpandLess
-                                  else Icons.Default.ExpandMore,
-                    contentDescription = "Details",
-                    modifier = Modifier.size(16.dp),
-                )
-            }
+            Icon(
+                imageVector = Icons.Default.ChevronRight,
+                contentDescription = "Details",
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
-
-        // Expanded details
-        if (isExpanded) {
-            Spacer(Modifier.height(8.dp))
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                ),
-            ) {
-                Column(Modifier.padding(12.dp)) {
-                    DetailRow("TxID", tx.txid)
-                    DetailRow("Date", if (tx.timestamp > 0) {
-                        java.text.SimpleDateFormat("MMM d, yyyy h:mm a", java.util.Locale.getDefault())
-                            .format(java.util.Date(tx.timestamp * 1000))
-                    } else "Pending")
-                    DetailRow("Status", tx.status.name)
-                    DetailRow("Block", tx.blockHeight.toString())
-                    DetailRow("Confirmations", tx.confirmations.toString())
-                    if (tx.fee > 0) {
-                        DetailRow("Fee", "${formatSatoshis(tx.fee)} TIME")
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DetailRow(label: String, value: String) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 2.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.widthIn(max = 200.dp),
-        )
     }
 }

@@ -228,9 +228,32 @@ class WalletManager private constructor(
             if (!source.exists()) return null
             val timestamp = java.time.LocalDateTime.now()
                 .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmmss"))
-            val backupFile = File(walletDir(dir, network), "time-wallet-$timestamp.dat")
+            val netTag = if (network == NetworkType.Testnet) "testnet" else "mainnet"
+            val backupFile = File(walletDir(dir, network), "time-wallet-$netTag-$timestamp.dat")
             source.copyTo(backupFile, overwrite = false)
             return backupFile
+        }
+
+        /** List available wallet backup files, sorted newest-first. */
+        fun listBackups(dir: File, network: NetworkType): List<File> {
+            val walletDir = walletDir(dir, network)
+            if (!walletDir.exists()) return emptyList()
+            val netTag = if (network == NetworkType.Testnet) "testnet" else "mainnet"
+            return walletDir.listFiles { f ->
+                f.name.startsWith("time-wallet-") &&
+                    f.name.endsWith(".dat") &&
+                    f.name != WALLET_FILENAME &&
+                    f.name.contains(netTag)
+            }?.sortedByDescending { it.lastModified() } ?: emptyList()
+        }
+
+        /** Parse the network from a backup filename. Returns null if not identifiable. */
+        fun backupNetwork(file: File): NetworkType? {
+            return when {
+                file.name.contains("testnet") -> NetworkType.Testnet
+                file.name.contains("mainnet") -> NetworkType.Mainnet
+                else -> null
+            }
         }
 
         /** Get the wallet file for sharing/export. */
@@ -239,11 +262,36 @@ class WalletManager private constructor(
             return if (file.exists()) file else null
         }
 
-        /** Delete the wallet file. Backs up first with a timestamp. */
+        /** Delete the wallet file. Backs up first with a timestamp. Returns true on success. */
         fun deleteWallet(dir: File, network: NetworkType): Boolean {
             backupWallet(dir, network)
             val file = File(walletDir(dir, network), WALLET_FILENAME)
-            return file.delete()
+            if (!file.exists()) return true
+            val deleted = file.delete()
+            if (!deleted) {
+                // Fallback: overwrite with empty and try again
+                try {
+                    file.writeText("")
+                    file.delete()
+                } catch (_: Exception) { }
+            }
+            return !file.exists()
+        }
+
+        /** Restore a backup file as the active wallet (replaces current). */
+        fun restoreBackup(dir: File, network: NetworkType, backupFile: File): Boolean {
+            val target = File(walletDir(dir, network), WALLET_FILENAME)
+            // Back up the current wallet first (if it exists)
+            if (target.exists()) {
+                backupWallet(dir, network)
+                target.delete()
+            }
+            return try {
+                backupFile.copyTo(target, overwrite = true)
+                true
+            } catch (e: Exception) {
+                false
+            }
         }
     }
 }

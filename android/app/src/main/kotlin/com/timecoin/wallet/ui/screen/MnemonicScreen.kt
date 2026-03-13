@@ -118,7 +118,7 @@ fun MnemonicSetupScreen(service: WalletService) {
                                     Text(
                                         text = "${idx + 1}. ${displayWords[idx]}",
                                         modifier = Modifier.weight(1f),
-                                        style = MaterialTheme.typography.bodyMedium,
+                                        style = MaterialTheme.typography.bodyLarge,
                                         fontWeight = FontWeight.Medium,
                                     )
                                 }
@@ -315,20 +315,175 @@ fun MnemonicSetupScreen(service: WalletService) {
 private fun printMnemonic(context: android.content.Context, mnemonic: String) {
     val printManager = context.getSystemService(android.content.Context.PRINT_SERVICE) as android.print.PrintManager
     val words = mnemonic.split(" ")
-    val rows = words.mapIndexed { i, w -> "<tr><td>${i + 1}.</td><td>$w</td></tr>" }.joinToString("")
+    val wordCount = words.size
+    val rows = (wordCount + 1) / 2
+    val now = java.time.LocalDateTime.now()
+    val dateStr = now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+
+    // Build 2-column word grid rows
+    val gridRows = StringBuilder()
+    for (i in 0 until rows) {
+        val leftIdx = i
+        val rightIdx = i + rows
+        val leftNum = String.format("%2d.", leftIdx + 1)
+        val leftWord = words.getOrElse(leftIdx) { "" }
+        val rightNum = if (rightIdx < wordCount) String.format("%2d.", rightIdx + 1) else ""
+        val rightWord = words.getOrElse(rightIdx) { "" }
+        gridRows.append("""
+            <tr>
+                <td class="num">$leftNum</td>
+                <td class="word">$leftWord</td>
+                <td class="gap"></td>
+                <td class="num">$rightNum</td>
+                <td class="word">$rightWord</td>
+            </tr>
+        """)
+    }
+
+    // Notes: 3 blank underlines
+    val notesLines = (1..3).joinToString("") {
+        """<div class="note-line"></div>"""
+    }
+
     val html = """
-        <html><body style="font-family:monospace;padding:40px;">
-        <h2>TIME Coin — Recovery Phrase</h2>
-        <p style="color:red;font-weight:bold;">
-            Keep this document safe. Anyone with these words can access your funds.
-        </p>
-        <table style="font-size:16pt;border-collapse:collapse;margin-top:20px;">
-        $rows
-        </table>
-        <p style="margin-top:30px;font-size:10pt;color:#666;">
-            Date: ${java.time.LocalDate.now()}
-        </p>
-        </body></html>
+        <html>
+        <head>
+        <style>
+            @page { size: A4; margin: 25mm 25mm 15mm 25mm; }
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+                color: #333;
+                margin: 0;
+                padding: 0;
+                font-size: 10pt;
+            }
+            h1 {
+                font-size: 28pt;
+                font-weight: bold;
+                margin: 0 0 4mm 0;
+            }
+            .subtitle {
+                font-size: 16pt;
+                margin: 0 0 4mm 0;
+                font-weight: normal;
+            }
+            .meta {
+                font-size: 10pt;
+                color: #666;
+                margin: 0 0 2mm 0;
+            }
+            hr { border: none; border-top: 0.5pt solid #c0c0c0; margin: 6mm 0; }
+            .warning-box {
+                margin: 4mm 0 6mm 0;
+            }
+            .warning-title {
+                font-size: 12pt;
+                font-weight: bold;
+                margin-bottom: 3mm;
+            }
+            .warning-list {
+                list-style: none;
+                padding-left: 5mm;
+                margin: 0;
+            }
+            .warning-list li {
+                font-size: 9pt;
+                line-height: 1.8;
+            }
+            .grid-title {
+                font-size: 14pt;
+                font-weight: bold;
+                margin: 6mm 0 3mm 0;
+            }
+            .word-grid {
+                border: 0.5pt solid #c0c0c0;
+                border-collapse: collapse;
+                width: 100%;
+                margin: 2mm 0;
+            }
+            .word-grid td {
+                padding: 2mm 3mm;
+                font-size: 12pt;
+                vertical-align: middle;
+            }
+            .word-grid .num {
+                font-family: Helvetica, Arial, sans-serif;
+                font-size: 11pt;
+                text-align: right;
+                width: 10mm;
+                color: #666;
+            }
+            .word-grid .word {
+                font-family: "Courier New", Courier, monospace;
+                font-size: 12pt;
+                width: 55mm;
+            }
+            .word-grid .gap { width: 10mm; }
+            .verify-title {
+                font-size: 12pt;
+                font-weight: bold;
+                margin: 6mm 0 3mm 0;
+            }
+            .verify-text {
+                font-size: 9pt;
+                line-height: 1.6;
+            }
+            .notes-title {
+                font-size: 11pt;
+                font-weight: bold;
+                margin: 6mm 0 3mm 0;
+            }
+            .note-line {
+                border-bottom: 0.5pt solid #ccc;
+                height: 8mm;
+                margin: 0;
+            }
+            .footer {
+                margin-top: 10mm;
+                font-size: 8pt;
+                color: #999;
+                line-height: 1.6;
+            }
+        </style>
+        </head>
+        <body>
+            <h1>TIME Coin Wallet</h1>
+            <div class="subtitle">Recovery Phrase — Paper Backup</div>
+            <div class="meta">Generated: $dateStr</div>
+            <div class="meta">$wordCount words</div>
+            <hr>
+
+            <div class="warning-box">
+                <div class="warning-title">IMPORTANT — READ CAREFULLY</div>
+                <ul class="warning-list">
+                    <li>• Store this document in a secure location (e.g. safe, safety deposit box).</li>
+                    <li>• NEVER share these words with anyone — they give full access to your funds.</li>
+                    <li>• Do NOT store this digitally — print and keep the physical copy only.</li>
+                    <li>• These words are the ONLY way to recover your wallet if your device is lost.</li>
+                    <li>• Anyone with these words can steal all your TIME coins.</li>
+                </ul>
+            </div>
+
+            <div class="grid-title">Your Recovery Phrase</div>
+            <table class="word-grid">
+                $gridRows
+            </table>
+
+            <div class="verify-title">Verification</div>
+            <div class="verify-text">
+                After writing down or printing these words, verify them by restoring<br>
+                your wallet in the TIME Coin Wallet app using the recovery phrase above.
+            </div>
+
+            <div class="notes-title">Notes:</div>
+            $notesLines
+
+            <div class="footer">
+                TIME Coin Wallet — https://time-coin.io<br>
+                This document is confidential. Destroy securely when no longer needed.
+            </div>
+        </body>
+        </html>
     """.trimIndent()
 
     val webView = android.webkit.WebView(context)
@@ -355,7 +510,7 @@ private fun MnemonicWordInput(
         modifier = modifier.focusRequester(focusRequester),
         singleLine = true,
         label = { Text("$number") },
-        textStyle = MaterialTheme.typography.bodyMedium,
+        textStyle = MaterialTheme.typography.bodyLarge,
         keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.None,
             autoCorrect = false,

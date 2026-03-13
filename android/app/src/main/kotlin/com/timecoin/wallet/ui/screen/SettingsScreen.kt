@@ -10,12 +10,20 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.timecoin.wallet.crypto.Address
+import com.timecoin.wallet.crypto.NetworkType
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
+import java.text.SimpleDateFormat
+import java.util.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -23,13 +31,17 @@ fun SettingsScreen(service: WalletService) {
     val isTestnet by service.isTestnet.collectAsState()
     val health by service.health.collectAsState()
     val wsConnected by service.wsConnected.collectAsState()
-    val contacts by service.contacts.collectAsState()
     val decimalPlaces by service.decimalPlaces.collectAsState()
+    val peerInfoList by service.peerInfos.collectAsState()
+    val peers by service.peers.collectAsState()
+    val connectedPeer by service.connectedPeer.collectAsState()
+    val reindexing by service.reindexing.collectAsState()
+    val backups by service.backups.collectAsState()
     val context = LocalContext.current
 
-    var showAddContact by remember { mutableStateOf(false) }
-    var contactName by remember { mutableStateOf("") }
-    var contactAddress by remember { mutableStateOf("") }
+
+    // Load backups on first composition
+    LaunchedEffect(Unit) { service.refreshBackups() }
 
     Scaffold(
         topBar = {
@@ -50,7 +62,7 @@ fun SettingsScreen(service: WalletService) {
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
         ) {
-            // Network info
+            // ── Display ──
             Text("Display", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             Card(Modifier.fillMaxWidth()) {
@@ -74,7 +86,7 @@ fun SettingsScreen(service: WalletService) {
 
             Spacer(Modifier.height(24.dp))
 
-            // Network info
+            // ── Network ──
             Text("Network", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             Card(Modifier.fillMaxWidth()) {
@@ -112,96 +124,81 @@ fun SettingsScreen(service: WalletService) {
                             Text("Block Height")
                             Text("${it.blockHeight}", fontWeight = FontWeight.Medium)
                         }
+                    }
+                    connectedPeer?.let {
                         Spacer(Modifier.height(8.dp))
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Connected Peers")
-                            Text("${it.peerCount}", fontWeight = FontWeight.Medium)
+                            Text("Connected To")
+                            Text(
+                                it.removePrefix("https://").removePrefix("http://"),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Medium,
+                            )
                         }
                     }
                 }
             }
 
-            Spacer(Modifier.height(24.dp))
-
-            // Contacts
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text("Contacts", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                IconButton(onClick = { showAddContact = !showAddContact }) {
-                    Icon(
-                        if (showAddContact) Icons.Default.Close else Icons.Default.Add,
-                        contentDescription = "Add contact",
-                    )
-                }
-            }
-
-            if (showAddContact) {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        OutlinedTextField(
-                            value = contactName,
-                            onValueChange = { contactName = it },
-                            label = { Text("Name") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = contactAddress,
-                            onValueChange = { contactAddress = it },
-                            label = { Text("TIME Address") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            onClick = {
-                                if (contactName.isNotBlank() && contactAddress.isNotBlank()) {
-                                    service.saveContact(contactName.trim(), contactAddress.trim())
-                                    contactName = ""
-                                    contactAddress = ""
-                                    showAddContact = false
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text("Save Contact")
-                        }
-                    }
-                }
+            // ── Peer List ──
+            if (peerInfoList.isNotEmpty()) {
+                Spacer(Modifier.height(16.dp))
+                Text("Peers", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
-            }
-
-            val externalContacts = contacts.filter { !it.isOwned }
-            if (externalContacts.isEmpty()) {
-                Text(
-                    "No contacts saved",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                externalContacts.forEach { contact ->
-                    Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                        Row(
-                            Modifier.padding(12.dp).fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(contact.name, fontWeight = FontWeight.Medium)
-                                Text(
-                                    contact.address,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            IconButton(onClick = { service.deleteContact(contact.address) }) {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp)) {
+                        peerInfoList.forEach { peer ->
+                            val host = peer.endpoint
+                                .removePrefix("https://").removePrefix("http://")
+                            val isConnected = peer.isActive
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                // Status indicator
                                 Icon(
-                                    Icons.Default.Delete,
-                                    contentDescription = "Delete",
-                                    tint = MaterialTheme.colorScheme.error,
+                                    if (peer.isHealthy) Icons.Default.CheckCircle else Icons.Default.Cancel,
+                                    contentDescription = null,
+                                    tint = if (peer.isHealthy) Color(0xFF4CAF50) else MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(16.dp),
                                 )
+                                Spacer(Modifier.width(8.dp))
+                                // Host + block height
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        host,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = if (isConnected) FontWeight.Bold else FontWeight.Normal,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    val details = buildList {
+                                        peer.pingMs?.let { add("${it}ms") }
+                                        peer.blockHeight?.let { add("H:$it") }
+                                        if (peer.wsAvailable) add("WS")
+                                        if (isConnected) add("Active")
+                                    }
+                                    if (details.isNotEmpty()) {
+                                        Text(
+                                            details.joinToString(" · "),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                                // Switch button (only for non-active healthy peers)
+                                if (peer.isHealthy && !isConnected) {
+                                    TextButton(
+                                        onClick = { service.switchPeer(peer.endpoint) },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                    ) {
+                                        Text("Switch", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                            }
+                            if (peer != peerInfoList.last()) {
+                                Divider(Modifier.padding(vertical = 2.dp))
                             }
                         }
                     }
@@ -210,11 +207,17 @@ fun SettingsScreen(service: WalletService) {
 
             Spacer(Modifier.height(24.dp))
 
-            // Wallet Management
+            // ── Node Configuration ──
+            NodeConfigSection(service)
+
+            Spacer(Modifier.height(24.dp))
+
+            // ── Wallet Management ──
             Text("Wallet", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
 
             var showDeleteConfirm by remember { mutableStateOf(false) }
+            var showReindexConfirm by remember { mutableStateOf(false) }
 
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
@@ -257,6 +260,38 @@ fun SettingsScreen(service: WalletService) {
 
                     Spacer(Modifier.height(8.dp))
 
+                    // Create Backup
+                    OutlinedButton(
+                        onClick = { service.createBackup() },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Create Backup Now")
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    // Reindex
+                    OutlinedButton(
+                        onClick = { showReindexConfirm = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !reindexing,
+                    ) {
+                        if (reindexing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(20.dp))
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (reindexing) "Reindexing..." else "Reindex Wallet")
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
                     // Delete Wallet
                     OutlinedButton(
                         onClick = { showDeleteConfirm = true },
@@ -272,41 +307,53 @@ fun SettingsScreen(service: WalletService) {
                 }
             }
 
-            // Delete confirmation dialog
-            if (showDeleteConfirm) {
+            // Reindex confirmation dialog
+            if (showReindexConfirm) {
                 AlertDialog(
-                    onDismissRequest = { showDeleteConfirm = false },
-                    title = { Text("Delete Wallet?") },
+                    onDismissRequest = { showReindexConfirm = false },
+                    title = { Text("Reindex Wallet?") },
                     text = {
                         Text(
-                            "This will delete your wallet and create an automatic backup. " +
-                                "Make sure you have saved your recovery phrase before proceeding.",
+                            "This will erase cached UTXOs and transaction history, then " +
+                                "resync everything from the masternode. Your wallet keys " +
+                                "and balance are not affected.",
                         )
                     },
                     confirmButton = {
-                        TextButton(
-                            onClick = {
-                                showDeleteConfirm = false
-                                service.deleteWallet()
-                            },
-                            colors = ButtonDefaults.textButtonColors(
-                                contentColor = MaterialTheme.colorScheme.error,
-                            ),
-                        ) {
-                            Text("Delete")
+                        TextButton(onClick = {
+                            showReindexConfirm = false
+                            service.reindexWallet()
+                        }) {
+                            Text("Reindex")
                         }
                     },
                     dismissButton = {
-                        TextButton(onClick = { showDeleteConfirm = false }) {
+                        TextButton(onClick = { showReindexConfirm = false }) {
                             Text("Cancel")
                         }
                     },
                 )
             }
 
+            // Delete confirmation dialog — with backup warning
+            if (showDeleteConfirm) {
+                DeleteWalletDialog(
+                    onDismiss = { showDeleteConfirm = false },
+                    onConfirm = {
+                        showDeleteConfirm = false
+                        service.deleteWallet()
+                    },
+                )
+            }
+
             Spacer(Modifier.height(24.dp))
 
-            // About
+            // ── Backups ──
+            BackupSection(service, backups)
+
+            Spacer(Modifier.height(24.dp))
+
+            // ── About ──
             Text("About", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             Card(Modifier.fillMaxWidth()) {
@@ -325,3 +372,299 @@ fun SettingsScreen(service: WalletService) {
         }
     }
 }
+
+// ── Delete Wallet Dialog with backup warning ──
+
+@Composable
+private fun DeleteWalletDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    var confirmText by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                Icons.Default.Warning,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(40.dp),
+            )
+        },
+        title = { Text("Delete Wallet?", color = MaterialTheme.colorScheme.error) },
+        text = {
+            Column {
+                Text(
+                    "⚠ Back up your recovery phrase before deleting!",
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Deleting without a backup means permanent loss of funds. " +
+                        "An automatic backup of the wallet file will be created, but " +
+                        "you should also have your 12/24-word recovery phrase written down.",
+                )
+                Spacer(Modifier.height(16.dp))
+                Text("Type DELETE to confirm:", fontWeight = FontWeight.Medium)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = confirmText,
+                    onValueChange = { confirmText = it.uppercase() },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("DELETE") },
+                    isError = confirmText.isNotEmpty() && confirmText != "DELETE",
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                enabled = confirmText == "DELETE",
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
+            ) {
+                Text("Delete Permanently")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
+}
+
+// ── Node Configuration Section ──
+
+@Composable
+private fun NodeConfigSection(service: WalletService) {
+    var expanded by remember { mutableStateOf(false) }
+    var configText by remember { mutableStateOf("") }
+    var isEditing by remember { mutableStateOf(false) }
+
+    Text("Node Configuration", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+    Spacer(Modifier.height(8.dp))
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "time.conf",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                )
+                TextButton(onClick = {
+                    if (!expanded) {
+                        configText = service.getConfigText()
+                    }
+                    expanded = !expanded
+                    isEditing = false
+                }) {
+                    Text(if (expanded) "Hide" else "Edit")
+                }
+            }
+
+            Text(
+                "Add masternode peers manually when the website API is down.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            if (expanded) {
+                Spacer(Modifier.height(12.dp))
+
+                OutlinedTextField(
+                    value = configText,
+                    onValueChange = {
+                        configText = it
+                        isEditing = true
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 150.dp),
+                    textStyle = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                    ),
+                    maxLines = 20,
+                )
+
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            service.saveConfigText(configText)
+                            isEditing = false
+                        },
+                        enabled = isEditing,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Save", maxLines = 1)
+                    }
+                    OutlinedButton(
+                        onClick = { service.reconnect() },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Reconnect", maxLines = 1)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── Backup Management Section ──
+
+@Composable
+private fun BackupSection(service: WalletService, backups: List<java.io.File>) {
+    val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
+    var showDeleteBackup by remember { mutableStateOf<java.io.File?>(null) }
+    var showRestoreBackup by remember { mutableStateOf<java.io.File?>(null) }
+
+    Text("Backups", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+    Spacer(Modifier.height(8.dp))
+
+    if (backups.isEmpty()) {
+        Text(
+            "No backups found",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    } else {
+        backups.forEach { file ->
+            Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                Row(
+                    Modifier.padding(12.dp).fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Default.Description,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        // Show network badge from filename
+                        val netLabel = when {
+                            file.name.contains("testnet") -> "Testnet"
+                            file.name.contains("mainnet") -> "Mainnet"
+                            else -> "Unknown"
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(file.name, style = MaterialTheme.typography.bodyMedium)
+                        }
+                        Text(
+                            "$netLabel · " +
+                                dateFormat.format(Date(file.lastModified())) +
+                                " · ${file.length() / 1024} KB",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = { showRestoreBackup = file }) {
+                        Icon(
+                            Icons.Default.Restore,
+                            contentDescription = "Restore",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    IconButton(onClick = { showDeleteBackup = file }) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = "Delete",
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // Restore confirmation
+    showRestoreBackup?.let { file ->
+        val backupNet = when {
+            file.name.contains("testnet") -> "Testnet"
+            file.name.contains("mainnet") -> "Mainnet"
+            else -> null
+        }
+        val isTestnet = service.isTestnet.collectAsState().value
+        val currentNet = if (isTestnet) "Testnet" else "Mainnet"
+        val mismatch = backupNet != null && backupNet != currentNet
+
+        AlertDialog(
+            onDismissRequest = { showRestoreBackup = null },
+            title = { Text("Restore Backup?") },
+            text = {
+                Column {
+                    if (mismatch) {
+                        Text(
+                            "⚠ Network mismatch: this backup is from $backupNet " +
+                                "but you are currently on $currentNet. Addresses will not match.",
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    Text(
+                        "This will replace your current wallet with the backup " +
+                            "\"${file.name}\". Your current wallet will be backed up first.",
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRestoreBackup = null
+                    service.restoreBackup(file, null)
+                }) {
+                    Text("Restore")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRestoreBackup = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    // Delete backup confirmation
+    showDeleteBackup?.let { file ->
+        AlertDialog(
+            onDismissRequest = { showDeleteBackup = null },
+            title = { Text("Delete Backup?") },
+            text = { Text("Delete \"${file.name}\"? This cannot be undone.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteBackup = null
+                        service.deleteBackup(file)
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteBackup = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+}
+

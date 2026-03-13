@@ -1,5 +1,6 @@
 package com.timecoin.wallet.ui
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -10,7 +11,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.timecoin.wallet.crypto.Address
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
 import com.timecoin.wallet.ui.screen.*
@@ -24,22 +29,76 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var walletService: WalletService
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        installSplashScreen()
+        val splash = installSplashScreen()
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
         walletService.checkExistingWallet()
 
+        // Keep splash visible until Compose content is ready to render.
+        // Must use MutableState (not a plain var) so the condition closure
+        // observes updates from inside setContent.
+        val isReady = mutableStateOf(false)
+        splash.setKeepOnScreenCondition { !isReady.value }
+
+        // Handle share intent on cold start
+        handleShareIntent(intent)
+
         setContent {
+            isReady.value = true
+
             TimeCoinWalletTheme {
-                WalletApp(walletService)
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background,
+                ) {
+                    WalletApp(walletService)
+                }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleShareIntent(intent)
     }
 
     override fun onDestroy() {
         super.onDestroy()
         if (isFinishing) walletService.shutdown()
+    }
+
+    /**
+     * Extract TIME addresses and phone numbers from shared text.
+     * Handles SMS shares, clipboard shares, etc.
+     */
+    private fun handleShareIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND) return
+        if (intent.type != "text/plain") return
+
+        val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return
+
+        // Extract TIME address (TIME0... or TIME1...)
+        val addressRegex = Regex("""TIME[01][123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{30,40}""")
+        val addressMatch = addressRegex.find(text)
+        val address = addressMatch?.value
+
+        // Validate the address with full checksum verification
+        if (address == null || !Address.isValid(address)) return
+
+        // Extract phone number — try EXTRA_PHONE_NUMBER first, then parse from text
+        val phoneFromExtra = intent.getStringExtra("address") // SMS app may pass sender
+        val phoneRegex = Regex("""(?:\+?1?[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}""")
+        val phoneMatch = phoneRegex.find(text)
+        val phone = phoneFromExtra ?: phoneMatch?.value?.trim() ?: ""
+
+        walletService.setSharedContact(
+            WalletService.SharedContact(
+                address = address,
+                phone = phone,
+                rawText = text.take(500),
+            )
+        )
     }
 }
 
@@ -48,6 +107,7 @@ fun WalletApp(service: WalletService) {
     val currentScreen by service.screen.collectAsState()
     val error by service.error.collectAsState()
     val success by service.success.collectAsState()
+    val sharedContact by service.sharedContact.collectAsState()
 
     Scaffold(
         bottomBar = {
@@ -107,6 +167,7 @@ fun WalletApp(service: WalletService) {
                 )
                 Screen.Receive -> ReceiveScreen(service)
                 Screen.Transactions -> TransactionHistoryScreen(service)
+                Screen.TransactionDetail -> TransactionDetailScreen(service)
                 Screen.Connections -> ConnectionsScreen(service)
                 Screen.Settings -> SettingsScreen(service)
             }
@@ -136,4 +197,102 @@ fun WalletApp(service: WalletService) {
             },
         )
     }
+
+    // Shared contact dialog — shown when a TIME address is shared to the app
+    sharedContact?.let { contact ->
+        SharedContactDialog(
+            contact = contact,
+            onSave = { name, phone ->
+                service.saveContact(
+                    name = name,
+                    address = contact.address,
+                    phone = phone,
+                )
+                service.clearSharedContact()
+            },
+            onSendTo = { name, phone ->
+                service.saveContact(
+                    name = name,
+                    address = contact.address,
+                    phone = phone,
+                )
+                service.setScannedAddress(contact.address)
+                service.navigateTo(Screen.Send)
+                service.clearSharedContact()
+            },
+            onDismiss = { service.clearSharedContact() },
+        )
+    }
+}
+
+@Composable
+private fun SharedContactDialog(
+    contact: WalletService.SharedContact,
+    onSave: (name: String, phone: String) -> Unit,
+    onSendTo: (name: String, phone: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    var phone by remember { mutableStateOf(contact.phone) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                Icons.Default.PersonAdd,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(32.dp),
+            )
+        },
+        title = { Text("TIME Address Found") },
+        text = {
+            Column {
+                Text(
+                    "A TIME address was detected in the shared message.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+
+                // Show the detected address
+                Text("Address", style = MaterialTheme.typography.labelMedium)
+                Text(
+                    contact.address,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                )
+                Spacer(Modifier.height(12.dp))
+
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Name") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = phone,
+                    onValueChange = { phone = it },
+                    label = { Text("Phone") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { onSave(name.trim(), phone.trim()) }) {
+                    Text("Save Contact")
+                }
+                TextButton(onClick = { onSendTo(name.trim(), phone.trim()) }) {
+                    Text("Send TIME")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Dismiss") }
+        },
+    )
 }

@@ -33,10 +33,15 @@ data class TransactionRecord(
     val fee: Long = 0,
     val timestamp: Long,
     val status: TransactionStatus = TransactionStatus.Pending,
+    val isFee: Boolean = false,
+    val isConsolidate: Boolean = false,
     val blockHash: String = "",
     val blockHeight: Long = 0,
     val confirmations: Long = 0,
-)
+) {
+    /** Unique key for deduplication and LazyColumn. */
+    val uniqueKey: String get() = "$txid:$isSend:$isFee:$vout"
+}
 
 @Serializable
 enum class TransactionStatus {
@@ -62,14 +67,23 @@ data class FinalityStatus(
     val confirmations: Int,
 )
 
-/** Peer info from masternode */
+/** Peer info from masternode — mirrors desktop wallet's PeerInfo struct */
 @Serializable
 data class PeerInfo(
     val endpoint: String,
     val isActive: Boolean = false,
     val isHealthy: Boolean = false,
+    val wsAvailable: Boolean = false,
     val pingMs: Long? = null,
     val blockHeight: Long? = null,
+    val version: String? = null,
+)
+
+/** Individual transaction output (from gettransaction vout array) */
+data class TxOutputInfo(
+    val value: Long,
+    val index: Int,
+    val address: String,
 )
 
 /** Contact / address book entry */

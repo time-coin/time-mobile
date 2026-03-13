@@ -1,5 +1,6 @@
 package com.timecoin.wallet.network
 
+import android.util.Log
 import com.timecoin.wallet.crypto.NetworkType
 import com.timecoin.wallet.model.*
 import io.ktor.client.*
@@ -146,6 +147,37 @@ class MasternodeClient(
         )
     }
 
+    /**
+     * Get peer list from the connected masternode (gossip discovery).
+     * Returns a list of "IP:P2P_PORT" strings from the masternode's peer table.
+     */
+    suspend fun getPeerAddresses(): List<String> {
+        val result = rpcCall("getpeerinfo", buildJsonArray {})
+        return result.jsonArray.mapNotNull { peer ->
+            peer.jsonObject["addr"]?.jsonPrimitive?.contentOrNull
+        }
+    }
+
+    /**
+     * Get full transaction details including per-output breakdown.
+     * Used to expand "consolidate" (self-send) entries into individual outputs
+     * so processTransactions can create proper send + receive + fee entries.
+     */
+    suspend fun getTransactionDetail(txid: String): Pair<Long, List<TxOutputInfo>> {
+        val result = rpcCall("gettransaction", buildJsonArray { add(txid) })
+        val obj = result.jsonObject
+        val fee = jsonToSatoshisAbs(obj["fee"])
+        val outputs = obj["vout"]?.jsonArray?.mapNotNull { vout ->
+            val vo = vout.jsonObject
+            val value = jsonToSatoshisAbs(vo["value"])
+            val n = vo["n"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
+            val addr = vo["scriptPubKey"]?.jsonObject?.get("address")
+                ?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            TxOutputInfo(value = value, index = n, address = addr)
+        } ?: emptyList()
+        return Pair(fee, outputs)
+    }
+
     fun close() { client.close() }
 
     // ── Internal ──
@@ -182,9 +214,8 @@ class MasternodeClient(
             val obj = tx.jsonObject
             val txid = obj["txid"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
             val category = obj["category"]?.jsonPrimitive?.contentOrNull ?: "unknown"
-            val amount = jsonToSatoshisAbs(obj["amount"])
+            val rawAmount = jsonToSatoshisAbs(obj["amount"])
             val fee = jsonToSatoshisAbs(obj["fee"])
-            val isSend = category == "send"
             val address = obj["address"]?.jsonPrimitive?.contentOrNull ?: ""
             val vout = obj["vout"]?.jsonPrimitive?.intOrNull ?: 0
             val timestamp = obj["time"]?.jsonPrimitive?.longOrNull
@@ -195,20 +226,56 @@ class MasternodeClient(
             val finalized = obj["finalized"]?.jsonPrimitive?.booleanOrNull ?: false
             val blockHeight = obj["blockheight"]?.jsonPrimitive?.longOrNull ?: 0
             val confirmations = obj["confirmations"]?.jsonPrimitive?.longOrNull ?: 0
+            val txStatus = if (inBlock || finalized) TransactionStatus.Approved else TransactionStatus.Pending
 
-            // Don't subtract fee here — store the raw amount from the RPC.
-            // Fee is tracked separately and displayed as its own line item.
-            if (amount == 0L && !isSend) return@mapNotNull null
+            val isSend = category == "send"
+            val isConsolidate = category == "consolidate"
+
+            Log.d("MasternodeClient", "parseTx: txid=${txid.take(12)}.. cat=$category " +
+                "rawAmt=$rawAmount fee=$fee addr=${address.take(16)}.. vout=$vout")
+
+            // "consolidate" = self-send (all outputs go back to own addresses).
+            // Pass through as a marker so refreshTransactions can expand it
+            // via gettransaction into individual per-output entries.
+            if (isConsolidate) {
+                return@mapNotNull TransactionRecord(
+                    txid = txid,
+                    vout = vout,
+                    isSend = true,
+                    isConsolidate = true,
+                    address = address,
+                    amount = rawAmount,
+                    fee = fee,
+                    timestamp = timestamp,
+                    status = txStatus,
+                    blockHash = blockHash,
+                    blockHeight = blockHeight,
+                    confirmations = confirmations,
+                )
+            }
+
+            // RPC includes fee in the send amount — subtract it so we
+            // display only the actual transferred value. Matches desktop
+            // wallet behavior (masternode_client.rs:311-312).
+            val displayAmount = if (isSend && fee > 0) {
+                maxOf(rawAmount - fee, 0)
+            } else {
+                rawAmount
+            }
+
+            // Skip zero-amount received/generate entries — these are staking
+            // inputs with no corresponding payout in that transaction.
+            if (displayAmount == 0L && !isSend) return@mapNotNull null
 
             TransactionRecord(
                 txid = txid,
                 vout = vout,
                 isSend = isSend,
                 address = address,
-                amount = amount,
+                amount = displayAmount,
                 fee = fee,
                 timestamp = timestamp,
-                status = if (inBlock || finalized) TransactionStatus.Approved else TransactionStatus.Pending,
+                status = txStatus,
                 blockHash = blockHash,
                 blockHeight = blockHeight,
                 confirmations = confirmations,

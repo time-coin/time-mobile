@@ -3,24 +3,46 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Clock circle -->
+
+    <!-- Clock circle (brand icon) -->
+    <path
+        android:fillColor="#1A237E"
+        android:pathData="M54,28 A18,18 0 1,1 54,64 A18,18 0 1,1 54,28Z"/>
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M54,27a27,27 0,1 1,0 54a27,27 0,1 1,0 -54z"/>
+        android:pathData="M54,31 A15,15 0 1,1 54,61 A15,15 0 1,1 54,31Z"/>
     <!-- Hour hand -->
     <path
-        android:fillColor="#1A73E8"
-        android:strokeWidth="3"
-        android:strokeColor="#1A73E8"
-        android:pathData="M54,54L54,38"/>
+        android:strokeColor="#1A237E"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M54,46 L54,37"/>
     <!-- Minute hand -->
     <path
-        android:fillColor="#1A73E8"
-        android:strokeWidth="2.5"
-        android:strokeColor="#1A73E8"
-        android:pathData="M54,54L66,48"/>
+        android:strokeColor="#1A237E"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M54,46 L61,46"/>
     <!-- Center dot -->
     <path
-        android:fillColor="#1A73E8"
-        android:pathData="M54,52a2,2 0,1 1,0 4a2,2 0,1 1,0 -4z"/>
+        android:fillColor="#1A237E"
+        android:pathData="M54,46 m-1.8,0 a1.8,1.8 0 1,1 3.6,0 a1.8,1.8 0 1,1 -3.6,0"/>
+
+    <!-- "TIME" text below clock -->
+    <!-- T -->
+    <path
+        android:fillColor="#1A237E"
+        android:pathData="M24,70 L38,70 L38,73 L33,73 L33,86 L29,86 L29,73 L24,73Z"/>
+    <!-- I -->
+    <path
+        android:fillColor="#1A237E"
+        android:pathData="M40,70 L44,70 L44,86 L40,86Z"/>
+    <!-- M -->
+    <path
+        android:fillColor="#1A237E"
+        android:pathData="M47,70 L52,70 L54,77 L56,70 L61,70 L61,86 L57,86 L57,75 L54.5,83 L53.5,83 L51,75 L51,86 L47,86Z"/>
+    <!-- E -->
+    <path
+        android:fillColor="#1A237E"
+        android:pathData="M64,70 L76,70 L76,73 L68,73 L68,76 L75,76 L75,79 L68,79 L68,83 L76,83 L76,86 L64,86Z"/>
 </vector>
