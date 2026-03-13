@@ -19,14 +19,25 @@ fun formatTime(epochSeconds: Long): String {
 }
 
 fun formatSatoshis(satoshis: Long, decimalPlaces: Int = 8): String {
-    val whole = satoshis / 100_000_000
-    val frac = satoshis % 100_000_000
-    val fracStr = "%08d".format(frac)
-    val trimmed = if (decimalPlaces >= 8) {
-        fracStr.trimEnd('0').ifEmpty { "0" }
-    } else {
-        fracStr.take(decimalPlaces).ifEmpty { "0" }
+    if (decimalPlaces >= 8) {
+        val whole = satoshis / 100_000_000
+        val frac = satoshis % 100_000_000
+        val fracStr = "%08d".format(frac)
+        val trimmed = fracStr.trimEnd('0').ifEmpty { "0" }
+        val wholeStr = whole.toString().reversed().chunked(3).joinToString(",").reversed()
+        return "$wholeStr.$trimmed"
     }
+
+    // Round to the specified decimal places using integer arithmetic
+    val roundUnit = POW10[8 - decimalPlaces]
+    val rounded = (satoshis + roundUnit / 2) / roundUnit * roundUnit
+    val whole = rounded / 100_000_000
+    val frac = rounded % 100_000_000
+    val fracStr = "%08d".format(frac).take(decimalPlaces)
     val wholeStr = whole.toString().reversed().chunked(3).joinToString(",").reversed()
-    return "$wholeStr.$trimmed"
+    return "$wholeStr.$fracStr"
 }
+
+private val POW10 = longArrayOf(
+    1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000
+)

@@ -4,7 +4,6 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -29,24 +28,13 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var walletService: WalletService
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        val splash = installSplashScreen()
-        enableEdgeToEdge()
+        installSplashScreen()
         super.onCreate(savedInstanceState)
 
         walletService.checkExistingWallet()
-
-        // Keep splash visible until Compose content is ready to render.
-        // Must use MutableState (not a plain var) so the condition closure
-        // observes updates from inside setContent.
-        val isReady = mutableStateOf(false)
-        splash.setKeepOnScreenCondition { !isReady.value }
-
-        // Handle share intent on cold start
         handleShareIntent(intent)
 
         setContent {
-            isReady.value = true
-
             TimeCoinWalletTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),

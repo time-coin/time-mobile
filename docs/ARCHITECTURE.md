@@ -2,45 +2,49 @@
 
 ## Overview
 
-The TIME Coin mobile app uses a hybrid notification strategy:
+The TIME Coin mobile app is a thin client — all blockchain state lives on
+masternodes. The wallet stores keys locally and queries masternodes via
+JSON-RPC over HTTP, with real-time updates via WebSocket.
 
-- **Foreground**: TCP direct connection to masternode
-- **Background**: FCM/APNs push notifications  
-- **Fallback**: HTTP API polling
+- **Foreground**: WebSocket connection to masternode for real-time transaction notifications
+- **Background**: Planned — FCM push notifications (not yet implemented)
+- **Fallback**: HTTP JSON-RPC polling
 
 ## Components
 
-### Wallet Layer
-- BIP-39 mnemonic generation
-- BIP-44 address derivation (m/44'/0'/0')
-- Private key management (secure keystore)
-- Transaction signing
+### Wallet Layer (`crypto/`, `wallet/`)
+- BIP-39 mnemonic generation (kotlin-bip39)
+- SLIP-0010 HD key derivation (Ed25519, path `m/44'/0'/account'/change'/index'`)
+- Ed25519 signing via BouncyCastle
+- AES-256-GCM encryption with Argon2id KDF (64 MB, 3 iterations)
+- 4-digit PIN unlock with optional biometric authentication (AndroidX BiometricPrompt)
+- Android Keystore integration for biometric key storage
 
-### Network Layer
-- TCP protocol client (port 24100)
-- HTTP REST API client
-- FCM/APNs push notification handler
+### Network Layer (`network/`)
+- JSON-RPC client via Ktor + OkHttp (ports 24001 mainnet / 24101 testnet)
+- WebSocket notifications via OkHttp (auto-reconnect with exponential backoff)
+- Peer discovery: API lookup → `time.conf` manual config → cached peers
+- Ping-based peer selection (TCP connect timing, health checks, block height)
 
-### Storage Layer
-- Encrypted wallet data
-- Transaction history
-- Address book
-- User preferences
+### Storage Layer (`db/`)
+- Room database v3 (`wallet.db`) with tables: contacts, transactions, settings
+- Encrypted wallet files (same format as desktop wallet for portability)
 
-### UI Layer
-- Balance display
-- Send/receive screens
-- Transaction history
-- QR scanner
-- Settings
+### UI Layer (`ui/`)
+- Jetpack Compose with Material 3 theming
+- Hilt dependency injection (`@AndroidEntryPoint`)
+- Screens: Welcome, PIN Entry, Password Unlock, Overview, Send, Receive,
+  Transaction History, Transaction Detail, QR Scanner, Connections, Settings,
+  Mnemonic Backup
 
 ## Security Model
 
-- Private keys stored in OS secure keystore (Android Keystore / iOS Keychain)
-- Local data encrypted with AES-256
-- Biometric authentication for transactions
-- Certificate pinning for API calls
-- Root/Jailbreak detection on startup
+- Wallet encrypted with AES-256-GCM; key derived from 4-digit PIN via Argon2id
+- Optional biometric unlock: PIN encrypted with Android Keystore key,
+  decrypted via BiometricPrompt on unlock
+- Mnemonic phrases never stored in plaintext after wallet creation
+- Private keys never leave the device
+- Report security issues privately to: **security@time-coin.io**
 
 ## Data Flow
 

@@ -16,3 +16,6 @@ Thumbs.db
 
 # Node
 node_modules/
+
+test_screen*.png
+debug_screen*.png
