@@ -181,24 +181,6 @@ fun TransactionDetailRow(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            // Status icon
-            val statusIcon = when (tx.status) {
-                TransactionStatus.Approved -> Icons.Default.CheckCircle
-                TransactionStatus.Pending -> Icons.Default.HourglassEmpty
-                TransactionStatus.Declined -> Icons.Default.Cancel
-            }
-            val statusColor = when (tx.status) {
-                TransactionStatus.Approved -> Color(0xFF00C850)
-                TransactionStatus.Pending -> Color(0xFFFFA500)
-                TransactionStatus.Declined -> Color(0xFFFF3B30)
-            }
-            Icon(
-                imageVector = statusIcon,
-                contentDescription = tx.status.name,
-                tint = statusColor,
-                modifier = Modifier.size(16.dp),
-            )
-            Spacer(Modifier.width(6.dp))
             Column(horizontalAlignment = Alignment.End) {
                 Text(
                     text = "${if (tx.isSend || tx.isFee) "-" else "+"}${formatSatoshis(tx.amount, decimalPlaces)} TIME",
@@ -216,6 +198,24 @@ fun TransactionDetailRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            Spacer(Modifier.width(6.dp))
+            // Status icon
+            val statusIcon = when (tx.status) {
+                TransactionStatus.Approved -> Icons.Default.CheckCircle
+                TransactionStatus.Pending -> Icons.Default.HourglassEmpty
+                TransactionStatus.Declined -> Icons.Default.Cancel
+            }
+            val statusColor = when (tx.status) {
+                TransactionStatus.Approved -> Color(0xFF00C850)
+                TransactionStatus.Pending -> Color(0xFFFFA500)
+                TransactionStatus.Declined -> Color(0xFFFF3B30)
+            }
+            Icon(
+                imageVector = statusIcon,
+                contentDescription = tx.status.name,
+                tint = statusColor,
+                modifier = Modifier.size(16.dp),
+            )
             Spacer(Modifier.width(4.dp))
             Icon(
                 imageVector = Icons.Default.ChevronRight,

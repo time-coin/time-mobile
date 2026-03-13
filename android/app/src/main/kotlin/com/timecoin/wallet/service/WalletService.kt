@@ -343,6 +343,25 @@ class WalletService @Inject constructor(
                     is WsEvent.Connected -> _wsConnected.value = true
                     is WsEvent.Disconnected -> _wsConnected.value = false
                     is WsEvent.TransactionReceived -> {
+                        // Immediately add transaction to UI for instant feedback
+                        val notif = event.notification
+                        val w = wallet
+                        val isSend = w != null && !w.getAddresses().contains(notif.address)
+                        val instant = TransactionRecord(
+                            txid = notif.txid,
+                            vout = notif.outputIndex,
+                            isSend = isSend,
+                            address = notif.address,
+                            amount = notif.amount,
+                            timestamp = if (notif.timestamp > 0) notif.timestamp
+                                        else System.currentTimeMillis() / 1000,
+                            status = TransactionStatus.Pending,
+                        )
+                        val current = _transactions.value
+                        if (current.none { it.uniqueKey == instant.uniqueKey }) {
+                            _transactions.value = listOf(instant) + current
+                        }
+                        // Then do a full refresh in the background for complete data
                         refreshBalance()
                         refreshTransactions()
                         refreshUtxos()
