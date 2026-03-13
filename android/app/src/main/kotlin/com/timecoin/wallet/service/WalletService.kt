@@ -26,6 +26,10 @@ class WalletService @Inject constructor(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    companion object {
+        private const val TAG = "WalletService"
+    }
+
     // ── Observable state ──
     private val _screen = MutableStateFlow(Screen.Welcome)
     val screen: StateFlow<Screen> = _screen
@@ -88,6 +92,9 @@ class WalletService @Inject constructor(
 
     private val _decimalPlaces = MutableStateFlow(2)
     val decimalPlaces: StateFlow<Int> = _decimalPlaces
+
+    private val _selectedTransaction = MutableStateFlow<TransactionRecord?>(null)
+    val selectedTransaction: StateFlow<TransactionRecord?> = _selectedTransaction
 
     // ── Internal state ──
     private var wallet: WalletManager? = null
@@ -181,15 +188,18 @@ class WalletService @Inject constructor(
         scope.launch {
             _loading.value = true
             try {
+                Log.d(TAG, "loadWallet: loading network=$network")
                 wallet = WalletManager.load(walletDir, network, password)
                 currentPassword = password
                 _isTestnet.value = network == NetworkType.Testnet
                 _walletLoaded.value = true
                 _addresses.value = wallet!!.getAddresses()
+                Log.d(TAG, "loadWallet: ${_addresses.value.size} addresses loaded")
                 _contacts.value = contactDao.getAll()
                 _screen.value = Screen.Overview
                 connectToNetwork()
             } catch (e: Exception) {
+                Log.e(TAG, "loadWallet failed", e)
                 _error.value = "Failed to load wallet: ${e.message}"
                 if (password != null) {
                     _screen.value = Screen.PinUnlock
@@ -305,11 +315,15 @@ class WalletService @Inject constructor(
         pollJob?.cancel()
         pollJob = scope.launch {
             while (isActive) {
-                delay(30_000) // poll every 30s
+                delay(30_000)
                 try {
                     refreshBalance()
+                    refreshTransactions()
+                    refreshUtxos()
                     masternodeClient?.let { _health.value = it.healthCheck() }
-                } catch (_: Exception) { }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Polling cycle failed", e)
+                }
             }
         }
     }
@@ -319,48 +333,203 @@ class WalletService @Inject constructor(
     fun refreshBalance() {
         scope.launch {
             try {
-                val w = wallet ?: return@launch
-                val client = masternodeClient ?: return@launch
+                val w = wallet ?: run { Log.w(TAG, "refreshBalance: wallet is null"); return@launch }
+                val client = masternodeClient ?: run { Log.w(TAG, "refreshBalance: client is null"); return@launch }
                 val bal = client.getBalances(w.getAddresses())
+                Log.d(TAG, "refreshBalance: confirmed=${bal.confirmed} pending=${bal.pending} total=${bal.total}")
                 _balance.value = bal
-            } catch (_: Exception) { }
+            } catch (e: Exception) {
+                Log.e(TAG, "refreshBalance failed", e)
+            }
         }
     }
 
     fun refreshTransactions() {
         scope.launch {
             try {
-                val w = wallet ?: return@launch
-                val client = masternodeClient ?: return@launch
-                val txs = client.getTransactionsMulti(w.getAddresses(), 100)
-                _transactions.value = txs
+                val w = wallet ?: run { Log.w(TAG, "refreshTransactions: wallet is null"); return@launch }
+                val client = masternodeClient ?: run { Log.w(TAG, "refreshTransactions: client is null"); return@launch }
+                val rawTxs = client.getTransactionsMulti(w.getAddresses(), 100)
+                Log.d(TAG, "refreshTransactions: ${rawTxs.size} raw entries")
+
+                val ownAddresses = w.getAddresses().toSet()
+                val processed = processTransactions(rawTxs, ownAddresses)
+                Log.d(TAG, "refreshTransactions: ${processed.size} after change filtering")
+
+                _transactions.value = processed
 
                 // Cache to DB
-                transactionDao.upsertAll(txs.map {
+                transactionDao.upsertAll(processed.map {
                     TransactionEntity(
-                        txid = it.txid, isSend = it.isSend, address = it.address,
+                        txid = it.txid, vout = it.vout,
+                        isSend = it.isSend, isFee = it.isFee,
+                        address = it.address,
                         amount = it.amount, fee = it.fee, timestamp = it.timestamp,
                         status = it.status.name.lowercase(), blockHeight = it.blockHeight,
                         confirmations = it.confirmations,
                     )
                 })
-            } catch (_: Exception) { }
+            } catch (e: Exception) {
+                Log.e(TAG, "refreshTransactions failed", e)
+            }
         }
+    }
+
+    /**
+     * Post-process raw RPC transaction entries:
+     * 1. Deduplicate by (txid, isSend, vout)
+     * 2. Filter out change outputs (receive to own address for a txid we sent)
+     * 3. Filter out send entries for change destinations
+     * 4. Create separate fee entries for sends with fees
+     * 5. Synthesize missing receive entries for send-to-self transactions
+     *
+     * Mirrors the desktop wallet's state.rs change detection logic.
+     */
+    private fun processTransactions(
+        rawTxs: List<TransactionRecord>,
+        ownAddresses: Set<String>,
+    ): List<TransactionRecord> {
+        // 1. Deduplicate by (txid, isSend, vout)
+        val seen = mutableSetOf<String>()
+        val deduped = rawTxs.filter { seen.add(it.uniqueKey) }
+
+        // 2. Identify txids where we were the sender and build destination maps
+        val sendsByTxid = deduped
+            .filter { it.isSend }
+            .groupBy { it.txid }
+
+        val sendTxids = sendsByTxid.keys
+
+        // For each send txid, find the "real" send destination(s):
+        // destinations to addresses NOT in our wallet, or if ALL destinations
+        // are our own (send-to-self), the one with the smallest amount is the
+        // actual send and the rest are change.
+        val realSendDests = mutableMapOf<String, MutableSet<String>>() // txid → real dest addresses
+        for ((txid, sends) in sendsByTxid) {
+            val externalDests = sends.filter { it.address !in ownAddresses }
+            if (externalDests.isNotEmpty()) {
+                // Normal send: external addresses are the real destinations
+                realSendDests[txid] = externalDests.map { it.address }.toMutableSet()
+            } else {
+                // Send-to-self: all destinations are ours. Keep the smallest
+                // non-zero as the "real" send; the rest are change.
+                val sorted = sends.filter { it.amount > 0 }.sortedBy { it.amount }
+                if (sorted.isNotEmpty()) {
+                    realSendDests[txid] = mutableSetOf(sorted.first().address)
+                }
+            }
+        }
+
+        // 3. Filter: remove change send entries and change receive entries
+        val keptSelfReceive = mutableSetOf<String>()
+        val filtered = deduped.filter { tx ->
+            if (tx.isSend) {
+                // Filter out send entries for change destinations (own address
+                // that is NOT the real send destination for this txid)
+                if (tx.txid in sendTxids && tx.address in ownAddresses) {
+                    val realDests = realSendDests[tx.txid]
+                    if (realDests != null && tx.address !in realDests) {
+                        Log.d(TAG, "Filtering change send: txid=${tx.txid.take(12)}.. amount=${tx.amount} addr=${tx.address.take(12)}..")
+                        return@filter false
+                    }
+                }
+                return@filter true
+            }
+
+            // Keep receives for txids we didn't send
+            if (tx.txid !in sendTxids) return@filter true
+
+            // Receive for a txid we sent — check if it's change or a real receive
+            if (tx.address !in ownAddresses) return@filter true
+
+            // This is a receive to our own address for a txid we sent.
+            val realDests = realSendDests[tx.txid]
+            if (realDests != null && tx.address in realDests && tx.txid !in keptSelfReceive) {
+                // Send-to-self: keep one receive matching the send destination
+                keptSelfReceive.add(tx.txid)
+                return@filter true
+            }
+
+            // Change output — filter it out
+            Log.d(TAG, "Filtering change output: txid=${tx.txid.take(12)}.. amount=${tx.amount} addr=${tx.address.take(12)}..")
+            false
+        }
+
+        // 4. Create separate fee entries for sends
+        val feeEntries = mutableListOf<TransactionRecord>()
+        val seenFeeTxids = mutableSetOf<String>()
+        for (tx in filtered) {
+            if (tx.isSend && tx.fee > 0 && tx.txid !in seenFeeTxids) {
+                seenFeeTxids.add(tx.txid)
+                feeEntries.add(
+                    TransactionRecord(
+                        txid = tx.txid,
+                        vout = -1,
+                        isSend = true,
+                        isFee = true,
+                        address = "Network Fee",
+                        amount = tx.fee,
+                        fee = 0,
+                        timestamp = tx.timestamp,
+                        status = tx.status,
+                        blockHash = tx.blockHash,
+                        blockHeight = tx.blockHeight,
+                        confirmations = tx.confirmations,
+                    )
+                )
+            }
+        }
+
+        // 5. Synthesize missing receive entries for send-to-self transactions.
+        // If the destination is one of our own addresses and we don't already
+        // have a receive entry, add one so the history shows the full picture.
+        val synthReceives = mutableListOf<TransactionRecord>()
+        for ((txid, sends) in sendsByTxid) {
+            for (send in sends) {
+                if (send.address !in ownAddresses) continue
+                val realDests = realSendDests[txid] ?: continue
+                if (send.address !in realDests) continue
+                val hasReceive = filtered.any { it.txid == txid && !it.isSend && !it.isFee }
+                if (!hasReceive) {
+                    synthReceives.add(
+                        TransactionRecord(
+                            txid = txid,
+                            vout = send.vout,
+                            isSend = false,
+                            address = send.address,
+                            amount = send.amount,
+                            fee = 0,
+                            timestamp = send.timestamp,
+                            status = send.status,
+                            blockHash = send.blockHash,
+                            blockHeight = send.blockHeight,
+                            confirmations = send.confirmations,
+                        )
+                    )
+                }
+            }
+        }
+
+        // 6. Combine and sort by timestamp descending
+        return (filtered + feeEntries + synthReceives).sortedByDescending { it.timestamp }
     }
 
     fun refreshUtxos() {
         scope.launch {
             try {
-                val w = wallet ?: return@launch
-                val client = masternodeClient ?: return@launch
+                val w = wallet ?: run { Log.w(TAG, "refreshUtxos: wallet is null"); return@launch }
+                val client = masternodeClient ?: run { Log.w(TAG, "refreshUtxos: client is null"); return@launch }
                 val utxos = client.getUtxos(w.getAddresses())
+                Log.d(TAG, "refreshUtxos: ${utxos.size} utxos, spendable=${utxos.count { it.spendable }}")
                 w.setUtxos(utxos)
                 _utxos.value = utxos
                 _balance.value = _balance.value.copy(
                     confirmed = utxos.filter { it.spendable }.sumOf { it.amount }
                 )
                 _utxoSynced.value = true
-            } catch (_: Exception) { }
+            } catch (e: Exception) {
+                Log.e(TAG, "refreshUtxos failed", e)
+            }
         }
     }
 
@@ -496,11 +665,16 @@ class WalletService @Inject constructor(
     }
 
     fun navigateTo(screen: Screen) { _screen.value = screen }
+    fun showTransaction(tx: TransactionRecord) {
+        _selectedTransaction.value = tx
+        _screen.value = Screen.TransactionDetail
+    }
     fun clearError() { _error.value = null }
     fun clearSuccess() { _success.value = null }
 
     /** Lock the wallet: disconnect, clear sensitive state, return to PIN screen. */
     fun lockWallet() {
+        Log.d(TAG, "lockWallet: disconnecting and clearing state")
         masternodeClient?.close()
         masternodeClient = null
         wsClient?.stop()
@@ -654,6 +828,7 @@ enum class Screen {
     QrScanner,
     Receive,
     Transactions,
+    TransactionDetail,
     Connections,
     Settings,
 }

@@ -186,25 +186,30 @@ class MasternodeClient(
             val fee = jsonToSatoshisAbs(obj["fee"])
             val isSend = category == "send"
             val address = obj["address"]?.jsonPrimitive?.contentOrNull ?: ""
+            val vout = obj["vout"]?.jsonPrimitive?.intOrNull ?: 0
             val timestamp = obj["time"]?.jsonPrimitive?.longOrNull
                 ?: obj["blocktime"]?.jsonPrimitive?.longOrNull
                 ?: obj["timestamp"]?.jsonPrimitive?.longOrNull ?: 0
             val inBlock = obj["blockhash"]?.jsonPrimitive?.contentOrNull != null
+            val blockHash = obj["blockhash"]?.jsonPrimitive?.contentOrNull ?: ""
             val finalized = obj["finalized"]?.jsonPrimitive?.booleanOrNull ?: false
             val blockHeight = obj["blockheight"]?.jsonPrimitive?.longOrNull ?: 0
             val confirmations = obj["confirmations"]?.jsonPrimitive?.longOrNull ?: 0
 
-            val displayAmount = if (isSend && fee > 0) amount - fee else amount
-            if (displayAmount == 0L && !isSend) return@mapNotNull null
+            // Don't subtract fee here — store the raw amount from the RPC.
+            // Fee is tracked separately and displayed as its own line item.
+            if (amount == 0L && !isSend) return@mapNotNull null
 
             TransactionRecord(
                 txid = txid,
+                vout = vout,
                 isSend = isSend,
                 address = address,
-                amount = displayAmount,
+                amount = amount,
                 fee = fee,
                 timestamp = timestamp,
                 status = if (inBlock || finalized) TransactionStatus.Approved else TransactionStatus.Pending,
+                blockHash = blockHash,
                 blockHeight = blockHeight,
                 confirmations = confirmations,
             )

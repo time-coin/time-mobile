@@ -15,10 +15,15 @@ data class ContactEntity(
 )
 
 /** Cached transaction record. */
-@Entity(tableName = "transactions")
+@Entity(
+    tableName = "transactions",
+    primaryKeys = ["txid", "isSend", "isFee", "vout"],
+)
 data class TransactionEntity(
-    @PrimaryKey val txid: String,
+    val txid: String,
+    val vout: Int = 0,
     val isSend: Boolean,
+    val isFee: Boolean = false,
     val address: String,
     val amount: Long,
     val fee: Long = 0,
@@ -91,9 +96,10 @@ interface SettingDao {
 
 @Database(
     entities = [ContactEntity::class, TransactionEntity::class, SettingEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
+@TypeConverters()
 abstract class WalletDatabase : RoomDatabase() {
     abstract fun contactDao(): ContactDao
     abstract fun transactionDao(): TransactionDao
