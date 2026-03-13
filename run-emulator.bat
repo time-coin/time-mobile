@@ -34,7 +34,7 @@ start "" "%EMULATOR%" -avd %AVD%
 :: Wait for emulator to boot
 echo [3/4] Waiting for emulator to boot...
 :wait_boot
-ping -n 6 127.0.0.1 >nul
+timeout /t 5 /nobreak >nul
 "%ADB%" shell getprop sys.boot_completed 2>nul | findstr "1" >nul
 if %errorlevel% neq 0 goto wait_boot
 echo Emulator booted.

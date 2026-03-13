@@ -3,28 +3,24 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Circle border -->
+    <!-- Clock circle -->
     <path
-        android:fillColor="#00000000"
-        android:strokeColor="#000000"
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,27a27,27 0,1 1,0 54a27,27 0,1 1,0 -54z"/>
+    <!-- Hour hand -->
+    <path
+        android:fillColor="#1A73E8"
         android:strokeWidth="3"
-        android:pathData="M79,54a25,25 0,1,1 -50,0a25,25 0,1,1 50,0"/>
-    <!-- Upper left arm -->
+        android:strokeColor="#1A73E8"
+        android:pathData="M54,54L54,38"/>
+    <!-- Minute hand -->
     <path
-        android:fillColor="#00000000"
-        android:strokeColor="#000000"
-        android:strokeWidth="3"
-        android:strokeLineCap="round"
-        android:pathData="M36,36L54,49"/>
-    <!-- Upper right arm -->
+        android:fillColor="#1A73E8"
+        android:strokeWidth="2.5"
+        android:strokeColor="#1A73E8"
+        android:pathData="M54,54L66,48"/>
+    <!-- Center dot -->
     <path
-        android:fillColor="#00000000"
-        android:strokeColor="#000000"
-        android:strokeWidth="3"
-        android:strokeLineCap="round"
-        android:pathData="M72,36L54,49"/>
-    <!-- Lower filled shape (arc approximated along circle) -->
-    <path
-        android:fillColor="#000000"
-        android:pathData="M54,49 L32,65 L40,75 L54,79 L68,75 L76,65 Z"/>
+        android:fillColor="#1A73E8"
+        android:pathData="M54,52a2,2 0,1 1,0 4a2,2 0,1 1,0 -4z"/>
 </vector>
