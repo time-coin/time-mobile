@@ -58,6 +58,9 @@ class WalletService @Inject constructor(
     private val _utxoSynced = MutableStateFlow(false)
     val utxoSynced: StateFlow<Boolean> = _utxoSynced
 
+    private val _transactionsSynced = MutableStateFlow(false)
+    val transactionsSynced: StateFlow<Boolean> = _transactionsSynced
+
     private val _health = MutableStateFlow<HealthStatus?>(null)
     val health: StateFlow<HealthStatus?> = _health
 
@@ -363,6 +366,7 @@ class WalletService @Inject constructor(
                         }
                         // Mark balance as unverified until UTXO refresh completes
                         _utxoSynced.value = false
+                        _transactionsSynced.value = false
                         // Then do a full refresh in the background for complete data
                         refreshBalance()
                         refreshTransactions()
@@ -471,6 +475,9 @@ class WalletService @Inject constructor(
                 Log.d(TAG, "refreshTransactions: ${processed.size} after change filtering")
 
                 _transactions.value = processed
+
+                // Mark transactions as synced
+                _transactionsSynced.value = true
 
                 // Cache to DB
                 transactionDao.upsertAll(processed.map {
@@ -853,6 +860,7 @@ class WalletService @Inject constructor(
         _utxos.value = emptyList()
         _addresses.value = emptyList()
         _utxoSynced.value = false
+        _transactionsSynced.value = false
         _screen.value = Screen.PinUnlock
     }
 
@@ -900,6 +908,7 @@ class WalletService @Inject constructor(
         _utxos.value = emptyList()
         _addresses.value = emptyList()
         _utxoSynced.value = false
+        _transactionsSynced.value = false
         _screen.value = Screen.Welcome
 
         if (!deleted) {
@@ -922,8 +931,7 @@ class WalletService @Inject constructor(
                 _transactions.value = emptyList()
                 _utxos.value = emptyList()
                 _utxoSynced.value = false
-
-                wallet?.setUtxos(emptyList())
+                _transactionsSynced.value = false
 
                 // Resync from masternode
                 if (masternodeClient != null) {
@@ -990,6 +998,7 @@ class WalletService @Inject constructor(
             _utxos.value = emptyList()
             _addresses.value = emptyList()
             _utxoSynced.value = false
+            _transactionsSynced.value = false
             _screen.value = Screen.PasswordUnlock
         } else {
             _error.value = "Failed to restore backup"
@@ -1091,6 +1100,7 @@ class WalletService @Inject constructor(
         _utxos.value = emptyList()
         _addresses.value = emptyList()
         _utxoSynced.value = false
+        _transactionsSynced.value = false
         wallet = null
 
         // Load wallet for target network (encrypted → need PIN)

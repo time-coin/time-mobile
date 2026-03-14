@@ -27,10 +27,12 @@ import com.timecoin.wallet.service.WalletService
 import com.timecoin.wallet.ui.component.formatTime
 import com.timecoin.wallet.ui.component.formatSatoshis
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun OverviewScreen(service: WalletService) {
     val balance by service.balance.collectAsState()
     val utxoSynced by service.utxoSynced.collectAsState()
+    val txSynced by service.transactionsSynced.collectAsState()
     val decimalPlaces by service.decimalPlaces.collectAsState()
     val transactions by service.transactions.collectAsState()
     val contacts by service.contacts.collectAsState()
@@ -118,17 +120,21 @@ fun OverviewScreen(service: WalletService) {
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                     Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = "${formatSatoshis(balance.confirmed, decimalPlaces)} TIME",
-                        style = MaterialTheme.typography.headlineLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        val statusColor = if (utxoSynced) Color(0xFF00C850) else Color(0xFFFFA500)
-                        val statusText = if (utxoSynced) "Verified" else "Pending"
+                    FlowRow(
+                        verticalArrangement = Arrangement.Center,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            text = "${formatSatoshis(balance.confirmed, decimalPlaces)} TIME",
+                            style = MaterialTheme.typography.headlineLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                        val synced = utxoSynced && txSynced
+                        val statusColor = if (synced) Color(0xFF00C850) else Color(0xFFFFA500)
+                        val statusText = if (synced) "Verified" else "Pending"
                         Card(
+                            modifier = Modifier.align(Alignment.CenterVertically),
                             colors = CardDefaults.cardColors(containerColor = statusColor.copy(alpha = 0.15f)),
                         ) {
                             Text(
