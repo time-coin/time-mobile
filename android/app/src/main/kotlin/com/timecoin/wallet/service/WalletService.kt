@@ -49,9 +49,6 @@ class WalletService @Inject constructor(
     private val _utxos = MutableStateFlow<List<Utxo>>(emptyList())
     val utxos: StateFlow<List<Utxo>> = _utxos
 
-    // Cache for successfully expanded consolidate transactions
-    private val consolidateCache = mutableMapOf<String, List<TransactionRecord>>()
-
     private val _addresses = MutableStateFlow<List<String>>(emptyList())
     val addresses: StateFlow<List<String>> = _addresses
 
@@ -443,9 +440,8 @@ class WalletService @Inject constructor(
 
                         // Create a send entry for each output (processTransactions
                         // will detect self-send and pick smallest as "real" send)
-                        val entries = mutableListOf<TransactionRecord>()
                         for (out in outputs) {
-                            entries.add(TransactionRecord(
+                            expandedTxs.add(TransactionRecord(
                                 txid = ctx.txid,
                                 vout = out.index,
                                 isSend = true,
@@ -460,24 +456,15 @@ class WalletService @Inject constructor(
                             ))
                             Log.d(TAG, "  output[${out.index}]: ${out.value} → ${out.address.take(16)}..")
                         }
-                        // Cache successful expansion for fallback
-                        consolidateCache[ctx.txid] = entries
-                        expandedTxs.addAll(entries)
                     } catch (e: Exception) {
+                        // Fallback: show as fee-only if gettransaction fails
                         Log.w(TAG, "Failed to expand consolidate ${ctx.txid.take(12)}..", e)
-                        // Use cached expansion if available
-                        val cached = consolidateCache[ctx.txid]
-                        if (cached != null) {
-                            Log.d(TAG, "Using cached expansion for ${ctx.txid.take(12)}.. (${cached.size} entries)")
-                            expandedTxs.addAll(cached)
-                        } else if (ctx.fee > 0) {
-                            // Last resort: show fee-only (fee=0 to avoid duplicate in step 4)
+                        if (ctx.fee > 0) {
                             expandedTxs.add(ctx.copy(
                                 isFee = true,
                                 isConsolidate = false,
-                                address = "Network Fee",
+                                address = "Self-send fee",
                                 amount = ctx.fee,
-                                fee = 0,
                             ))
                         }
                     }
@@ -616,7 +603,7 @@ class WalletService @Inject constructor(
         val feeEntries = mutableListOf<TransactionRecord>()
         val seenFeeTxids = mutableSetOf<String>()
         for (tx in filtered) {
-            if (tx.isSend && !tx.isFee && tx.fee > 0 && tx.txid !in seenFeeTxids) {
+            if (tx.isSend && tx.fee > 0 && tx.txid !in seenFeeTxids) {
                 seenFeeTxids.add(tx.txid)
                 feeEntries.add(
                     TransactionRecord(
