@@ -527,25 +527,29 @@ class WalletService @Inject constructor(
 
         val sendTxids = sendsByTxid.keys
 
-        // For each send txid, find the "real" send destination(s):
-        // destinations to addresses NOT in our wallet, or if ALL destinations
-        // are our own (send-to-self), the one with the smallest amount is the
-        // actual send and the rest are change.
-        val realSendDests = mutableMapOf<String, MutableSet<String>>() // txid → real dest addresses
+        // For each send txid, find the "real" send output(s) by vout:
+        // outputs to addresses NOT in our wallet, or if ALL outputs
+        // are to our own addresses (send-to-self), the one with the
+        // smallest amount is the actual send and the rest are change.
+        // We track by vout (not address) because multiple outputs can
+        // share the same address.
+        val realSendVouts = mutableMapOf<String, MutableSet<Int>>() // txid → real send vouts
+        val selfSendTxids = mutableSetOf<String>()
         for ((txid, sends) in sendsByTxid) {
             val externalDests = sends.filter { it.address !in ownAddresses }
             if (externalDests.isNotEmpty()) {
-                // Normal send: external addresses are the real destinations
-                realSendDests[txid] = externalDests.map { it.address }.toMutableSet()
+                // Normal send: external outputs are the real destinations
+                realSendVouts[txid] = externalDests.map { it.vout }.toMutableSet()
                 Log.d(TAG, "  NORMAL SEND txid=${txid.take(12)}.. → ${externalDests.size} external dests")
             } else {
-                // Send-to-self: all destinations are ours. Keep the smallest
-                // non-zero as the "real" send; the rest are change.
+                // Send-to-self: all outputs go to own addresses. Keep the
+                // smallest non-zero as the "real" send; the rest are change.
+                selfSendTxids.add(txid)
                 val sorted = sends.filter { it.amount > 0 }.sortedBy { it.amount }
                 if (sorted.isNotEmpty()) {
-                    realSendDests[txid] = mutableSetOf(sorted.first().address)
+                    realSendVouts[txid] = mutableSetOf(sorted.first().vout)
                     Log.d(TAG, "  SELF-SEND txid=${txid.take(12)}.. picked smallest amount=${sorted.first().amount} " +
-                        "addr=${sorted.first().address.take(16)}.. (${sends.size} total sends)")
+                        "vout=${sorted.first().vout} addr=${sorted.first().address.take(16)}.. (${sends.size} total sends)")
                     for (s in sorted) {
                         Log.d(TAG, "    candidate: amount=${s.amount} addr=${s.address.take(16)}.. vout=${s.vout}")
                     }
@@ -557,12 +561,12 @@ class WalletService @Inject constructor(
         val keptSelfReceive = mutableSetOf<String>()
         val filtered = deduped.filter { tx ->
             if (tx.isSend) {
-                // Filter out send entries for change destinations (own address
-                // that is NOT the real send destination for this txid)
+                // Filter out send entries for change outputs (own address
+                // whose vout is NOT a real send vout for this txid)
                 if (tx.txid in sendTxids && tx.address in ownAddresses) {
-                    val realDests = realSendDests[tx.txid]
-                    if (realDests != null && tx.address !in realDests) {
-                        Log.d(TAG, "Filtering change send: txid=${tx.txid.take(12)}.. amount=${tx.amount} addr=${tx.address.take(12)}..")
+                    val realVouts = realSendVouts[tx.txid]
+                    if (realVouts != null && tx.vout !in realVouts) {
+                        Log.d(TAG, "Filtering change send: txid=${tx.txid.take(12)}.. amount=${tx.amount} vout=${tx.vout} addr=${tx.address.take(12)}..")
                         return@filter false
                     }
                 }
@@ -576,16 +580,16 @@ class WalletService @Inject constructor(
             if (tx.address !in ownAddresses) return@filter true
 
             // This is a receive to our own address for a txid we sent.
-            val realDests = realSendDests[tx.txid]
-            if (realDests != null && tx.address in realDests && tx.txid !in keptSelfReceive) {
-                // Send-to-self: keep one receive matching the send destination
+            val realVouts = realSendVouts[tx.txid]
+            if (realVouts != null && tx.vout in realVouts && tx.txid !in keptSelfReceive) {
+                // Send-to-self: keep one receive matching a real send vout
                 keptSelfReceive.add(tx.txid)
-                Log.d(TAG, "Keeping self-receive: txid=${tx.txid.take(12)}.. amount=${tx.amount} addr=${tx.address.take(16)}..")
+                Log.d(TAG, "Keeping self-receive: txid=${tx.txid.take(12)}.. amount=${tx.amount} vout=${tx.vout} addr=${tx.address.take(16)}..")
                 return@filter true
             }
 
             // Change output — filter it out
-            Log.d(TAG, "Filtering change output: txid=${tx.txid.take(12)}.. amount=${tx.amount} addr=${tx.address.take(12)}..")
+            Log.d(TAG, "Filtering change output: txid=${tx.txid.take(12)}.. amount=${tx.amount} vout=${tx.vout} addr=${tx.address.take(12)}..")
             false
         }
 
@@ -626,13 +630,13 @@ class WalletService @Inject constructor(
         // have a receive entry, add one so the history shows the full picture.
         val synthReceives = mutableListOf<TransactionRecord>()
         for ((txid, sends) in sendsByTxid) {
+            if (txid !in selfSendTxids) continue
+            val realVouts = realSendVouts[txid] ?: continue
             for (send in sends) {
-                if (send.address !in ownAddresses) continue
-                val realDests = realSendDests[txid] ?: continue
-                if (send.address !in realDests) continue
+                if (send.vout !in realVouts) continue
                 val hasReceive = filtered.any { it.txid == txid && !it.isSend && !it.isFee }
                 if (!hasReceive) {
-                    Log.d(TAG, "  SYNTH RECV: txid=${txid.take(12)}.. amount=${send.amount} addr=${send.address.take(16)}..")
+                    Log.d(TAG, "  SYNTH RECV: txid=${txid.take(12)}.. amount=${send.amount} vout=${send.vout} addr=${send.address.take(16)}..")
                     synthReceives.add(
                         TransactionRecord(
                             txid = txid,
@@ -662,8 +666,17 @@ class WalletService @Inject constructor(
                 "amount=${tx.amount} addr=${tx.address.take(16)}..")
         }
 
-        // 6. Combine and sort by timestamp descending
-        return result.sortedByDescending { it.timestamp }
+        // 6. Combine and sort by timestamp descending, with secondary order
+        // within the same timestamp: RECV first, then FEE, then SEND
+        // (so the logical flow Send→Fee→Receive reads bottom-to-top)
+        return result.sortedWith(
+            compareByDescending<TransactionRecord> { it.timestamp }
+                .thenBy { when {
+                    !it.isSend && !it.isFee -> 0  // RECV first (top)
+                    it.isFee -> 1                 // FEE middle
+                    else -> 2                     // SEND last (bottom)
+                }}
+        )
     }
 
     fun refreshUtxos() {
