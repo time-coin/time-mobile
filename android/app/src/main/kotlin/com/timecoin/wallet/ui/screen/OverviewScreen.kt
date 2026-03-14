@@ -1,15 +1,19 @@
 package com.timecoin.wallet.ui.screen
 
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -39,6 +43,32 @@ fun OverviewScreen(service: WalletService) {
         contacts.associate { it.address to it.label.ifEmpty { it.name }.ifEmpty { null } }
     }
 
+    // Pulse animation: triggers when balance increases
+    var previousBalance by remember { mutableLongStateOf(balance.confirmed) }
+    var pulseActive by remember { mutableStateOf(false) }
+
+    LaunchedEffect(balance.confirmed) {
+        if (balance.confirmed > previousBalance && previousBalance > 0L) {
+            pulseActive = true
+        }
+        previousBalance = balance.confirmed
+    }
+
+    // Glow alpha animates 0→1→0, scale does a subtle bump
+    val glowAlpha by animateFloatAsState(
+        targetValue = if (pulseActive) 1f else 0f,
+        animationSpec = tween(durationMillis = 400, easing = FastOutSlowInEasing),
+        finishedListener = {
+            if (pulseActive) pulseActive = false
+        },
+        label = "glowAlpha",
+    )
+    val cardScale by animateFloatAsState(
+        targetValue = if (pulseActive) 1.02f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+        label = "cardScale",
+    )
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -65,8 +95,18 @@ fun OverviewScreen(service: WalletService) {
 
         // Balance card
         item {
+            val glowColor = Color(0xFF00C850)
             Card(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .scale(cardScale)
+                    .then(
+                        if (glowAlpha > 0f) Modifier.border(
+                            width = (2 * glowAlpha).dp,
+                            color = glowColor.copy(alpha = glowAlpha * 0.8f),
+                            shape = RoundedCornerShape(12.dp),
+                        ) else Modifier
+                    ),
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                 ),

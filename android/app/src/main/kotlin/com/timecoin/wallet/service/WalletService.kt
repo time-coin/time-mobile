@@ -361,6 +361,8 @@ class WalletService @Inject constructor(
                         if (current.none { it.uniqueKey == instant.uniqueKey }) {
                             _transactions.value = listOf(instant) + current
                         }
+                        // Mark balance as unverified until UTXO refresh completes
+                        _utxoSynced.value = false
                         // Then do a full refresh in the background for complete data
                         refreshBalance()
                         refreshTransactions()
