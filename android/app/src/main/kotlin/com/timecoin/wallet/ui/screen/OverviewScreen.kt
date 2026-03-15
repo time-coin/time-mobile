@@ -125,7 +125,7 @@ fun OverviewScreen(service: WalletService) {
                             Divider()
                             DropdownMenuItem(
                                 text = { Text("Logout", color = MaterialTheme.colorScheme.error) },
-                                onClick = { menuExpanded = false; service.lockWallet() },
+                                onClick = { menuExpanded = false; service.logout() },
                                 leadingIcon = { Icon(Icons.Default.Logout, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
                             )
                         }

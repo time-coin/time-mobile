@@ -4,7 +4,9 @@
   "description": "Cross-platform mobile wallet for TIME Coin cryptocurrency",
   "private": true,
   "scripts": {
+    "android:emulator": "\"%LOCALAPPDATA%\\Android\\Sdk\\emulator\\emulator.exe\" -avd Pixel_5_Dev",
     "android:build": "cd android && .\\gradlew assembleDebug",
+    "android:install": "cd android && .\\gradlew assembleDebug && \"%LOCALAPPDATA%\\Android\\Sdk\\platform-tools\\adb.exe\" install -r app\\build\\outputs\\apk\\debug\\app-debug.apk",
     "android:release": "cd android && .\\gradlew assembleRelease",
     "android:test": "cd android && .\\gradlew test",
     "android:clean": "cd android && .\\gradlew clean"

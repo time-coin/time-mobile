@@ -33,7 +33,18 @@ data class TransactionEntity(
     val status: String = "pending",
     val blockHeight: Long = 0,
     val confirmations: Long = 0,
-)
+    val memo: String = "",
+) {
+    val uniqueKey: String get() = "$txid:$isSend:$isFee:$vout"
+
+    fun toTransactionRecord() = com.timecoin.wallet.model.TransactionRecord(
+        txid = txid, vout = vout, isSend = isSend, isFee = isFee,
+        address = address, amount = amount, fee = fee, timestamp = timestamp,
+        status = if (status == "approved") com.timecoin.wallet.model.TransactionStatus.Approved
+                 else com.timecoin.wallet.model.TransactionStatus.Pending,
+        blockHeight = blockHeight, confirmations = confirmations, memo = memo,
+    )
+}
 
 /** Key-value settings store. */
 @Entity(tableName = "settings")
@@ -68,8 +79,14 @@ interface ContactDao {
 
 @Dao
 interface TransactionDao {
+    @Query("SELECT * FROM transactions ORDER BY timestamp DESC")
+    suspend fun getAll(): List<TransactionEntity>
+
     @Query("SELECT * FROM transactions ORDER BY timestamp DESC LIMIT :limit")
     suspend fun getRecent(limit: Int = 50): List<TransactionEntity>
+
+    @Query("SELECT COUNT(*) FROM transactions")
+    suspend fun count(): Int
 
     @Query("SELECT * FROM transactions WHERE address LIKE '%' || :query || '%' OR txid LIKE '%' || :query || '%' ORDER BY timestamp DESC")
     suspend fun search(query: String): List<TransactionEntity>
@@ -79,6 +96,9 @@ interface TransactionDao {
 
     @Upsert
     suspend fun upsertAll(txs: List<TransactionEntity>)
+
+    @Query("UPDATE transactions SET memo = :memo WHERE txid = :txid AND vout = :vout AND isSend = :isSend AND isFee = :isFee")
+    suspend fun updateMemo(txid: String, vout: Int, isSend: Boolean, isFee: Boolean, memo: String)
 
     @Query("DELETE FROM transactions")
     suspend fun deleteAll()
@@ -98,7 +118,7 @@ interface SettingDao {
 
 @Database(
     entities = [ContactEntity::class, TransactionEntity::class, SettingEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 @TypeConverters()

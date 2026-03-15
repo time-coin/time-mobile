@@ -38,6 +38,7 @@ data class TransactionRecord(
     val blockHash: String = "",
     val blockHeight: Long = 0,
     val confirmations: Long = 0,
+    val memo: String = "",
 ) {
     /** Unique key for deduplication and LazyColumn. */
     val uniqueKey: String get() = "$txid:$isSend:$isFee:$vout"

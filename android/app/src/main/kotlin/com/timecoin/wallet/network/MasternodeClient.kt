@@ -57,11 +57,22 @@ class MasternodeClient(
         return Balance(confirmed = confirmed, pending = total - confirmed, total = total)
     }
 
-    /** Get combined balance across multiple addresses. */
+    /** Get combined balance across multiple addresses (batched to avoid oversized responses). */
     suspend fun getBalances(addresses: List<String>): Balance {
-        val result = rpcCall("getbalances", buildJsonArray { add(buildJsonArray { addresses.forEach { add(it) } }) })
-        val confirmed = jsonToSatoshis(result.jsonObject["available"])
-        val total = jsonToSatoshis(result.jsonObject["balance"])
+        if (addresses.size <= BATCH_SIZE) {
+            val result = rpcCall("getbalances", buildJsonArray { add(buildJsonArray { addresses.forEach { add(it) } }) })
+            val confirmed = jsonToSatoshis(result.jsonObject["available"])
+            val total = jsonToSatoshis(result.jsonObject["balance"])
+            return Balance(confirmed = confirmed, pending = total - confirmed, total = total)
+        }
+        // Batch: sum balances across chunks
+        var confirmed = 0L
+        var total = 0L
+        for (chunk in addresses.chunked(BATCH_SIZE)) {
+            val result = rpcCall("getbalances", buildJsonArray { add(buildJsonArray { chunk.forEach { add(it) } }) })
+            confirmed += jsonToSatoshis(result.jsonObject["available"])
+            total += jsonToSatoshis(result.jsonObject["balance"])
+        }
         return Balance(confirmed = confirmed, pending = total - confirmed, total = total)
     }
 
@@ -71,29 +82,46 @@ class MasternodeClient(
         return parseTransactionList(result)
     }
 
-    /** Get transaction history across multiple addresses. */
+    /** Get transaction history across multiple addresses (batched). */
     suspend fun getTransactionsMulti(addresses: List<String>, limit: Int = 50): List<TransactionRecord> {
-        val result = rpcCall("listtransactionsmulti", buildJsonArray {
-            add(buildJsonArray { addresses.forEach { add(it) } }); add(limit)
-        })
-        return parseTransactionList(result)
+        if (addresses.size <= BATCH_SIZE) {
+            val result = rpcCall("listtransactionsmulti", buildJsonArray {
+                add(buildJsonArray { addresses.forEach { add(it) } }); add(limit)
+            })
+            return parseTransactionList(result)
+        }
+        // Batch: collect and deduplicate by uniqueKey
+        val all = mutableListOf<TransactionRecord>()
+        for (chunk in addresses.chunked(BATCH_SIZE)) {
+            val result = rpcCall("listtransactionsmulti", buildJsonArray {
+                add(buildJsonArray { chunk.forEach { add(it) } }); add(limit)
+            })
+            all.addAll(parseTransactionList(result))
+        }
+        val seen = mutableSetOf<String>()
+        return all.filter { seen.add(it.uniqueKey) }
     }
 
-    /** Get UTXOs for addresses. */
+    /** Get UTXOs for addresses (batched). */
     suspend fun getUtxos(addresses: List<String>): List<Utxo> {
-        val result = rpcCall("listunspentmulti", buildJsonArray {
-            add(buildJsonArray { addresses.forEach { add(it) } })
-        })
-        return result.jsonArray.mapNotNull { u ->
-            val obj = u.jsonObject
-            val txid = obj["txid"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-            val vout = obj["vout"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
-            val amount = jsonToSatoshis(obj["amount"])
-            val addr = obj["address"]?.jsonPrimitive?.contentOrNull ?: ""
-            val confirmations = obj["confirmations"]?.jsonPrimitive?.intOrNull ?: 0
-            val spendable = obj["spendable"]?.jsonPrimitive?.booleanOrNull ?: true
-            Utxo(txid, vout, amount, addr, confirmations, spendable)
+        val chunks = if (addresses.size <= BATCH_SIZE) listOf(addresses) else addresses.chunked(BATCH_SIZE)
+        val all = mutableListOf<Utxo>()
+        for (chunk in chunks) {
+            val result = rpcCall("listunspentmulti", buildJsonArray {
+                add(buildJsonArray { chunk.forEach { add(it) } })
+            })
+            all.addAll(result.jsonArray.mapNotNull { u ->
+                val obj = u.jsonObject
+                val txid = obj["txid"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                val vout = obj["vout"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
+                val amount = jsonToSatoshis(obj["amount"])
+                val addr = obj["address"]?.jsonPrimitive?.contentOrNull ?: ""
+                val confirmations = obj["confirmations"]?.jsonPrimitive?.intOrNull ?: 0
+                val spendable = obj["spendable"]?.jsonPrimitive?.booleanOrNull ?: true
+                Utxo(txid, vout, amount, addr, confirmations, spendable)
+            })
         }
+        return all
     }
 
     /** Broadcast a signed transaction (hex-encoded). */
@@ -284,6 +312,9 @@ class MasternodeClient(
     }
 
     companion object {
+        /** Max addresses per RPC call to avoid oversized responses. */
+        private const val BATCH_SIZE = 20
+
         /** Trust manager that accepts all certificates (for self-signed masternode certs). */
         private val trustAllManager = object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}

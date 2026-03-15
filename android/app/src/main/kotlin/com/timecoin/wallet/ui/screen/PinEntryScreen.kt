@@ -6,6 +6,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Backspace
 import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -19,6 +20,7 @@ import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
 import com.timecoin.wallet.crypto.BiometricHelper
 import com.timecoin.wallet.crypto.NetworkType
+import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
 import com.timecoin.wallet.wallet.WalletManager
 
@@ -160,6 +162,26 @@ fun PinUnlockScreen(service: WalletService) {
                 }
             }
         },
+        bottomContent = {
+            var showResetDialog by remember { mutableStateOf(false) }
+
+            TextButton(onClick = { showResetDialog = true }) {
+                Text(
+                    "Forgot PIN?",
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+
+            if (showResetDialog) {
+                ForgotPinResetDialog(
+                    onDismiss = { showResetDialog = false },
+                    onConfirm = {
+                        showResetDialog = false
+                        service.deleteWallet()
+                    },
+                )
+            }
+        },
     )
 }
 
@@ -189,6 +211,7 @@ private fun PinEntryLayout(
     onDigit: (String) -> Unit,
     onBackspace: () -> Unit,
     onBiometric: () -> Unit,
+    bottomContent: @Composable (() -> Unit)? = null,
 ) {
     Column(
         modifier = Modifier.fillMaxSize().padding(32.dp),
@@ -293,5 +316,202 @@ private fun PinEntryLayout(
                 Spacer(Modifier.height(12.dp))
             }
         }
+
+        // Optional bottom content (e.g., "Forgot PIN?" link)
+        bottomContent?.invoke()
     }
+}
+
+/**
+ * Dialog shown when user taps "Forgot PIN?" — warns about data loss and requires typing RESET.
+ */
+@Composable
+private fun ForgotPinResetDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    var confirmText by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                Icons.Default.Warning,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(40.dp),
+            )
+        },
+        title = { Text("Reset Wallet?", color = MaterialTheme.colorScheme.error) },
+        text = {
+            Column {
+                Text(
+                    "⚠ This will delete your wallet from this device.",
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text("A backup will be created automatically, but you will need your recovery phrase to restore your wallet.")
+                Spacer(Modifier.height(8.dp))
+                Text("If you have lost your recovery phrase, your funds may be permanently inaccessible.")
+                Spacer(Modifier.height(12.dp))
+                Text("Type RESET to confirm:", fontWeight = FontWeight.Medium)
+                Spacer(Modifier.height(4.dp))
+                OutlinedTextField(
+                    value = confirmText,
+                    onValueChange = { confirmText = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                enabled = confirmText == "RESET",
+            ) {
+                Text("Reset Wallet", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+/**
+ * Change PIN screen — verifies current PIN, then set + confirm new PIN.
+ */
+@Composable
+fun ChangePinScreen(service: WalletService) {
+    var currentPin by remember { mutableStateOf("") }
+    var newPin by remember { mutableStateOf("") }
+    var confirmPin by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    // 0 = enter current, 1 = enter new, 2 = confirm new, 3 = done
+    var stage by remember { mutableIntStateOf(0) }
+
+    val context = LocalContext.current
+    val biometricAvailable = remember {
+        BiometricHelper.isAvailable(context) && BiometricHelper.isEnrolled(context)
+    }
+
+    val title = when (stage) {
+        0 -> "Enter Current PIN"
+        1 -> "Enter New PIN"
+        2 -> "Confirm New PIN"
+        else -> "PIN Changed"
+    }
+    val subtitle = when (stage) {
+        0 -> "Verify your identity"
+        1 -> "Choose a new 4-digit PIN"
+        2 -> "Enter your new PIN again"
+        else -> ""
+    }
+    val activePin = when (stage) {
+        0 -> currentPin
+        1 -> newPin
+        2 -> confirmPin
+        else -> ""
+    }
+
+    if (stage == 3) {
+        // Success state
+        Column(
+            modifier = Modifier.fillMaxSize().padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text("✓", fontSize = 48.sp)
+            Spacer(Modifier.height(16.dp))
+            Text(
+                "PIN Changed Successfully",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(24.dp))
+            Button(onClick = { service.navigateTo(Screen.Settings) }) {
+                Text("Back to Settings")
+            }
+        }
+        return
+    }
+
+    PinEntryLayout(
+        title = title,
+        subtitle = subtitle,
+        pin = activePin,
+        error = error,
+        showBiometric = stage == 0 && biometricAvailable,
+        loading = false,
+        onDigit = { digit ->
+            error = null
+            when (stage) {
+                0 -> {
+                    if (currentPin.length < 4) currentPin += digit
+                    if (currentPin.length == 4) {
+                        if (service.changePin(currentPin, currentPin)) {
+                            // Current PIN verified (re-saved with same PIN, no-op effectively)
+                            stage = 1
+                        } else {
+                            error = "Incorrect PIN"
+                            currentPin = ""
+                        }
+                    }
+                }
+                1 -> {
+                    if (newPin.length < 4) newPin += digit
+                    if (newPin.length == 4) stage = 2
+                }
+                2 -> {
+                    if (confirmPin.length < 4) confirmPin += digit
+                    if (confirmPin.length == 4) {
+                        if (confirmPin == newPin) {
+                            if (service.changePin(currentPin, newPin)) {
+                                // Re-enroll biometric with new PIN if available
+                                if (biometricAvailable) {
+                                    val activity = context as? FragmentActivity
+                                    if (activity != null) {
+                                        BiometricHelper.enroll(activity, newPin) { _ -> }
+                                    }
+                                }
+                                stage = 3
+                            } else {
+                                error = "Failed to change PIN"
+                                confirmPin = ""
+                            }
+                        } else {
+                            error = "PINs do not match"
+                            confirmPin = ""
+                        }
+                    }
+                }
+            }
+        },
+        onBackspace = {
+            error = null
+            when (stage) {
+                0 -> currentPin = currentPin.dropLast(1)
+                1 -> newPin = newPin.dropLast(1)
+                2 -> confirmPin = confirmPin.dropLast(1)
+            }
+        },
+        onBiometric = {
+            if (stage == 0) {
+                val activity = context as? FragmentActivity
+                if (activity != null) {
+                    BiometricHelper.authenticate(activity) { recoveredPin ->
+                        if (recoveredPin != null) {
+                            currentPin = recoveredPin
+                            stage = 1
+                        }
+                    }
+                }
+            }
+        },
+        bottomContent = if (stage == 0) {
+            {
+                TextButton(onClick = { service.navigateTo(Screen.Settings) }) {
+                    Text("Cancel")
+                }
+            }
+        } else null,
+    )
 }

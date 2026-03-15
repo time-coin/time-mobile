@@ -32,6 +32,8 @@ fun TransactionDetailScreen(service: WalletService) {
     val contacts by service.contacts.collectAsState()
     val decimalPlaces by service.decimalPlaces.collectAsState()
     val context = LocalContext.current
+    var memoText by remember(tx?.uniqueKey) { mutableStateOf(tx?.memo ?: "") }
+    var editingMemo by remember { mutableStateOf(false) }
 
     val labelMap = remember(contacts) {
         contacts.associate { it.address to it.label.ifEmpty { it.name }.ifEmpty { null } }
@@ -220,6 +222,67 @@ fun TransactionDetailScreen(service: WalletService) {
                             copyable = true,
                             context = context,
                         )
+                    }
+
+                    @Suppress("DEPRECATION")
+                    Divider(Modifier.padding(vertical = 8.dp))
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                text = "Memo",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (!editingMemo) {
+                                IconButton(
+                                    onClick = { editingMemo = true },
+                                    modifier = Modifier.size(32.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Default.Edit,
+                                        contentDescription = "Edit memo",
+                                        modifier = Modifier.size(16.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                        if (editingMemo) {
+                            OutlinedTextField(
+                                value = memoText,
+                                onValueChange = { memoText = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                placeholder = { Text("Add a note…") },
+                                trailingIcon = {
+                                    Row {
+                                        IconButton(onClick = {
+                                            service.saveMemo(transaction, memoText)
+                                            editingMemo = false
+                                        }) {
+                                            Icon(Icons.Default.Check, contentDescription = "Save")
+                                        }
+                                        IconButton(onClick = {
+                                            memoText = transaction.memo
+                                            editingMemo = false
+                                        }) {
+                                            Icon(Icons.Default.Close, contentDescription = "Cancel")
+                                        }
+                                    }
+                                },
+                            )
+                        } else {
+                            Text(
+                                text = memoText.ifEmpty { "—" },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (memoText.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant
+                                        else MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
                     }
                 }
             }

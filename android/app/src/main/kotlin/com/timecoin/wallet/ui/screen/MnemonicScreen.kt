@@ -163,7 +163,7 @@ fun MnemonicSetupScreen(service: WalletService) {
                 ) {
                     val leftIdx = row
                     val rightIdx = row + halfCount
-                        MnemonicWordInput(
+                    MnemonicWordInput(
                             number = leftIdx + 1,
                             value = words[leftIdx],
                             onValueChange = { newValue ->

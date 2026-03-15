@@ -221,6 +221,18 @@ fun SettingsScreen(service: WalletService) {
 
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
+                    // Change PIN
+                    OutlinedButton(
+                        onClick = { service.navigateTo(Screen.ChangePin) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Default.Pin, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Change PIN")
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
                     // Lock Wallet
                     OutlinedButton(
                         onClick = { service.lockWallet() },

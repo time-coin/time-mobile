@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.input.TextFieldValue
 import com.timecoin.wallet.model.TransactionRecord
 import com.timecoin.wallet.model.TransactionStatus
 import com.timecoin.wallet.service.Screen
@@ -27,7 +28,8 @@ fun TransactionHistoryScreen(service: WalletService) {
     val transactions by service.transactions.collectAsState()
     val contacts by service.contacts.collectAsState()
     val decimalPlaces by service.decimalPlaces.collectAsState()
-    var searchQuery by remember { mutableStateOf("") }
+    var searchFieldValue by remember { mutableStateOf(TextFieldValue("")) }
+    val searchQuery = searchFieldValue.text
 
     // Build address → label map from contacts (name preferred, then label)
     val labelMap = remember(contacts) {
@@ -74,8 +76,8 @@ fun TransactionHistoryScreen(service: WalletService) {
         ) {
             // Search bar
             TextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
+                value = searchFieldValue,
+                onValueChange = { searchFieldValue = it },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
@@ -84,7 +86,7 @@ fun TransactionHistoryScreen(service: WalletService) {
                 singleLine = true,
                 trailingIcon = {
                     if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { searchQuery = "" }) {
+                        IconButton(onClick = { searchFieldValue = TextFieldValue("") }) {
                             Icon(Icons.Default.Clear, contentDescription = "Clear")
                         }
                     }

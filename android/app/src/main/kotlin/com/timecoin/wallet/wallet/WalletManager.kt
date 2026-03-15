@@ -38,6 +38,10 @@ class WalletManager private constructor(
 
     fun getAddresses(): List<String> = addresses.toList()
 
+    /** Derive the address at a given index without adding it to the wallet. */
+    fun deriveAddressAt(index: Int): String =
+        MnemonicHelper.deriveAddress(mnemonic, "", 0, 0, index, network)
+
     /** Generate a new HD address at the next index. */
     fun generateAddress(): String {
         val addr = MnemonicHelper.deriveAddress(mnemonic, "", 0, 0, nextAddressIndex, network)
@@ -49,6 +53,16 @@ class WalletManager private constructor(
     /** Derive the keypair for a specific address index. */
     fun deriveKeypair(index: Int): Keypair =
         MnemonicHelper.deriveKeypairBip44(mnemonic, "", 0, 0, index)
+
+    /**
+     * Trim the address list to only keep addresses up to [count].
+     * Used to prune empty gap-scan addresses after a reindex.
+     */
+    fun trimAddresses(count: Int) {
+        if (count < 1) return
+        while (addresses.size > count) addresses.removeAt(addresses.size - 1)
+        nextAddressIndex = count
+    }
 
     // ── UTXO management ──
 
@@ -155,6 +169,8 @@ class WalletManager private constructor(
     companion object {
         private const val WALLET_VERSION = 3
         private const val WALLET_FILENAME = "time-wallet.dat"
+        /** BIP-44 gap limit — max consecutive unused addresses before stopping discovery. */
+        const val GAP_LIMIT = 20
 
         /** Return the wallet directory for the given network (testnet uses a subdirectory). */
         fun walletDir(baseDir: File, network: NetworkType): File =
@@ -180,10 +196,15 @@ class WalletManager private constructor(
             }
         }
 
-        /** Create a new wallet from a mnemonic phrase. */
+        /** Create a new wallet from a mnemonic phrase. Pre-generates BIP-44 gap limit addresses. */
         fun create(mnemonic: String, network: NetworkType): WalletManager {
             require(MnemonicHelper.validate(mnemonic)) { "Invalid mnemonic phrase" }
-            return WalletManager(mnemonic, network)
+            val w = WalletManager(mnemonic, network)
+            // Pre-generate addresses 1..19 (address 0 = primary, already exists)
+            for (i in 1 until GAP_LIMIT) {
+                w.generateAddress()
+            }
+            return w
         }
 
         /** Load wallet from an encrypted file. */

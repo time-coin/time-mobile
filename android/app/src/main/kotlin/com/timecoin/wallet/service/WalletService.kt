@@ -28,6 +28,8 @@ class WalletService @Inject constructor(
 
     companion object {
         private const val TAG = "WalletService"
+        private const val INITIAL_TX_LIMIT = 100
+        private const val TX_PAGE_SIZE = 100
     }
 
     // ── Observable state ──
@@ -48,6 +50,16 @@ class WalletService @Inject constructor(
 
     private val _utxos = MutableStateFlow<List<Utxo>>(emptyList())
     val utxos: StateFlow<List<Utxo>> = _utxos
+
+    // Cache for successfully expanded consolidate transactions
+    private val consolidateCache = mutableMapOf<String, List<TransactionRecord>>()
+
+    // Progressive transaction loading state
+    private var fetchedTxLimit = INITIAL_TX_LIMIT
+    private val _hasMoreTransactions = MutableStateFlow(true)
+    val hasMoreTransactions: StateFlow<Boolean> = _hasMoreTransactions
+    private val _loadingMore = MutableStateFlow(false)
+    val loadingMore: StateFlow<Boolean> = _loadingMore
 
     private val _addresses = MutableStateFlow<List<String>>(emptyList())
     val addresses: StateFlow<List<String>> = _addresses
@@ -132,6 +144,7 @@ class WalletService @Inject constructor(
     private var wsClient: WsNotificationClient? = null
     private var currentPassword: String? = null
     private var pollJob: Job? = null
+    private var backgroundSyncJob: Job? = null
     private var pendingMnemonic: String? = null
 
     private val walletDir get() = context.filesDir
@@ -226,6 +239,28 @@ class WalletService @Inject constructor(
                 _addresses.value = wallet!!.getAddresses()
                 Log.d(TAG, "loadWallet: ${_addresses.value.size} addresses loaded")
                 _contacts.value = contactDao.getAll()
+
+                // Load cached data from Room for instant display
+                val cachedTxs = transactionDao.getAll()
+                if (cachedTxs.isNotEmpty()) {
+                    _transactions.value = cachedTxs.map { it.toTransactionRecord() }
+                    Log.d(TAG, "loadWallet: ${cachedTxs.size} cached transactions loaded")
+                }
+                val cachedBal = settingDao.get("cached_balance")
+                if (cachedBal != null) {
+                    try {
+                        val parts = cachedBal.split(",")
+                        val confirmed = parts[0].toLong()
+                        val pending = parts.getOrNull(1)?.toLongOrNull() ?: 0L
+                        _balance.value = Balance(
+                            confirmed = confirmed,
+                            pending = pending,
+                            total = confirmed + pending,
+                        )
+                        Log.d(TAG, "loadWallet: cached balance confirmed=$confirmed pending=$pending")
+                    } catch (_: Exception) {}
+                }
+
                 _screen.value = Screen.Overview
                 connectToNetwork()
             } catch (e: Exception) {
@@ -248,11 +283,9 @@ class WalletService @Inject constructor(
                 val isTestnet = _isTestnet.value
                 Log.d(TAG, "Connecting to network, isTestnet=$isTestnet")
 
-                // Load manual config
-                val config = ConfigManager.load(walletDir)
-                val manualEndpoints = ConfigManager.manualEndpoints(
-                    config.copy(testnet = isTestnet)
-                )
+                // Load manual config (testnet config lives in testnet/ subdirectory)
+                val config = ConfigManager.load(walletDir, isTestnet)
+                val manualEndpoints = ConfigManager.manualEndpoints(config)
                 val rpcCreds = ConfigManager.rpcCredentials(config)
 
                 // Discover and rank all peers (parallel probe + gossip + consensus)
@@ -314,13 +347,25 @@ class WalletService @Inject constructor(
             _connectedPeer.value = url
             Log.d(TAG, "Connected to $url, block=${h.blockHeight}")
 
-            // Initial data fetch
+            // Kick off initial data fetch immediately — these launch their
+            // own coroutines so they run in parallel and return at once.
             refreshBalance()
             refreshTransactions()
             refreshUtxos()
-            discoverAddresses()
+
+            // Start WebSocket right away so we don't miss real-time events
+            // during the address trim / discovery phase.
             startWebSocket()
             startPolling()
+
+            // Trim and discover run in the background — they must not block
+            // the initial display since they can take many RPC round-trips.
+            scope.launch {
+                trimEmptyAddresses(client)
+                discoverAddresses()
+            }
+
+            startBackgroundSync()
             true
         } catch (e: Exception) {
             Log.w(TAG, "Peer $url failed: ${e.message}")
@@ -383,6 +428,7 @@ class WalletService @Inject constructor(
 
     private fun startPolling() {
         pollJob?.cancel()
+        backgroundSyncJob?.cancel()
         pollJob = scope.launch {
             while (isActive) {
                 delay(30_000)
@@ -398,50 +444,202 @@ class WalletService @Inject constructor(
         }
     }
 
+    /**
+     * After the initial sync shows "Verified", progressively download
+     * the full transaction history in the background. Each page reuses
+     * consolidateCache so only new self-send txids trigger RPC calls.
+     * Results are saved to Room for offline/search access.
+     */
+    private fun startBackgroundSync() {
+        backgroundSyncJob?.cancel()
+        backgroundSyncJob = scope.launch {
+            // Wait until the initial sync is verified (timeout after 2 min to avoid hanging forever)
+            withTimeoutOrNull(120_000) { transactionsSynced.first { it } }
+                ?: run { Log.w(TAG, "backgroundSync: timed out waiting for initial sync"); return@launch }
+            Log.d(TAG, "backgroundSync: initial sync verified, starting full history download")
+
+            while (isActive && _hasMoreTransactions.value) {
+                delay(3_000) // pace requests to avoid overloading masternode
+                try {
+                    val w = wallet ?: break
+                    val client = masternodeClient ?: break
+                    fetchedTxLimit += TX_PAGE_SIZE
+                    Log.d(TAG, "backgroundSync: fetching with limit=$fetchedTxLimit")
+
+                    val rawTxs = client.getTransactionsMulti(w.getAddresses(), fetchedTxLimit)
+                    _hasMoreTransactions.value = rawTxs.size >= fetchedTxLimit
+
+                    val processed = expandAndProcess(rawTxs, w, client)
+                    _transactions.value = processed
+                    cacheTransactionsToDb(processed)
+                    Log.d(TAG, "backgroundSync: cached ${processed.size} transactions (limit=$fetchedTxLimit, more=${_hasMoreTransactions.value})")
+                } catch (e: Exception) {
+                    Log.w(TAG, "backgroundSync: batch failed, retrying", e)
+                    fetchedTxLimit -= TX_PAGE_SIZE
+                    delay(10_000)
+                }
+            }
+            Log.d(TAG, "backgroundSync: complete, all transactions cached (limit=$fetchedTxLimit)")
+        }
+    }
+
     // ── Actions ──
 
     fun refreshBalance() {
         scope.launch {
-            try {
-                val w = wallet ?: run { Log.w(TAG, "refreshBalance: wallet is null"); return@launch }
-                val client = masternodeClient ?: run { Log.w(TAG, "refreshBalance: client is null"); return@launch }
-                val bal = client.getBalances(w.getAddresses())
-                Log.d(TAG, "refreshBalance: confirmed=${bal.confirmed} pending=${bal.pending} total=${bal.total}")
-                _balance.value = bal
-            } catch (e: Exception) {
-                Log.e(TAG, "refreshBalance failed", e)
-            }
+            try { refreshBalanceSync() }
+            catch (e: Exception) { Log.e(TAG, "refreshBalance failed", e) }
         }
+    }
+
+    private suspend fun refreshBalanceSync() {
+        val w = wallet ?: run { Log.w(TAG, "refreshBalance: wallet is null"); return }
+        val client = masternodeClient ?: run { Log.w(TAG, "refreshBalance: client is null"); return }
+        val bal = client.getBalances(w.getAddresses())
+        Log.d(TAG, "refreshBalance: confirmed=${bal.confirmed} pending=${bal.pending} total=${bal.total}")
+        _balance.value = bal
+        // Cache for instant display on next startup
+        settingDao.set(SettingEntity("cached_balance", "${bal.confirmed},${bal.pending}"))
     }
 
     fun refreshTransactions() {
         scope.launch {
-            try {
-                val w = wallet ?: run { Log.w(TAG, "refreshTransactions: wallet is null"); return@launch }
-                val client = masternodeClient ?: run { Log.w(TAG, "refreshTransactions: client is null"); return@launch }
-                val rawTxs = client.getTransactionsMulti(w.getAddresses(), 100)
-                Log.d(TAG, "refreshTransactions: ${rawTxs.size} raw entries")
+            try { refreshTransactionsSync() }
+            catch (e: Exception) { Log.e(TAG, "refreshTransactions failed", e) }
+        }
+    }
 
+    private suspend fun refreshTransactionsSync() {
+        val w = wallet ?: run { Log.w(TAG, "refreshTransactions: wallet is null"); return }
+        val client = masternodeClient ?: run { Log.w(TAG, "refreshTransactions: client is null"); return }
+        val rawTxs = client.getTransactionsMulti(w.getAddresses(), fetchedTxLimit)
+        Log.d(TAG, "refreshTransactions: ${rawTxs.size} raw entries (limit=$fetchedTxLimit)")
+
+        _hasMoreTransactions.value = rawTxs.size >= fetchedTxLimit
+
+        val processed = expandAndProcess(rawTxs, w, client)
+        _transactions.value = processed
+        _transactionsSynced.value = true
+        cacheTransactionsToDb(processed)
+    }
+
+    /**
+     * Load older transactions by increasing the fetch limit.
+     * Reuses consolidateCache so already-expanded self-sends skip RPC calls.
+     */
+    fun loadMoreTransactions() {
+        scope.launch {
+            if (_loadingMore.value) return@launch
+            if (!_hasMoreTransactions.value) return@launch
+            _loadingMore.value = true
+            try {
+                val w = wallet ?: return@launch
+                val client = masternodeClient ?: return@launch
+                fetchedTxLimit += TX_PAGE_SIZE
+                Log.d(TAG, "loadMoreTransactions: fetching with limit=$fetchedTxLimit")
+
+                val rawTxs = client.getTransactionsMulti(w.getAddresses(), fetchedTxLimit)
+                _hasMoreTransactions.value = rawTxs.size >= fetchedTxLimit
+
+                val processed = expandAndProcess(rawTxs, w, client)
+                _transactions.value = processed
+                cacheTransactionsToDb(processed)
+            } catch (e: Exception) {
+                Log.e(TAG, "loadMoreTransactions failed", e)
+                fetchedTxLimit -= TX_PAGE_SIZE
+            } finally {
+                _loadingMore.value = false
+            }
+        }
+    }
+
+    /**
+     * Search for a specific transaction by txid. Checks Room cache first,
+     * then falls back to direct gettransaction RPC call.
+     */
+    fun searchTransaction(txid: String) {
+        scope.launch {
+            try {
+                // Check if already in the displayed list
+                if (_transactions.value.any { it.txid == txid }) {
+                    Log.d(TAG, "searchTransaction: $txid already in list")
+                    return@launch
+                }
+
+                // Check Room cache
+                val cached = transactionDao.search(txid)
+                if (cached.isNotEmpty()) {
+                    Log.d(TAG, "searchTransaction: found ${cached.size} entries in Room")
+                    val existing = _transactions.value
+                    val cachedRecords = cached.map { it.toTransactionRecord() }
+                    _transactions.value = (existing + cachedRecords)
+                        .distinctBy { it.uniqueKey }
+                        .sortedByDescending { it.timestamp }
+                    return@launch
+                }
+
+                // Direct RPC lookup — fetch full transaction details
+                val client = masternodeClient ?: return@launch
+                val w = wallet ?: return@launch
                 val ownAddresses = w.getAddresses().toSet()
 
-                // Expand consolidate (self-send) entries by fetching per-output
-                // details from gettransaction. This gives processTransactions
-                // individual outputs so it can identify the real send amount
-                // vs change and create proper send + receive + fee entries.
-                val consolidateTxs = rawTxs.filter { it.isConsolidate }
-                val normalTxs = rawTxs.filter { !it.isConsolidate }
-                val expandedTxs = mutableListOf<TransactionRecord>()
+                val (fee, outputs) = client.getTransactionDetail(txid)
+                Log.d(TAG, "searchTransaction: found txid=$txid, ${outputs.size} outputs, fee=$fee")
 
-                for (ctx in consolidateTxs) {
+                val entries = outputs.map { out ->
+                    val toOwn = out.address in ownAddresses
+                    TransactionRecord(
+                        txid = txid, vout = out.index,
+                        isSend = toOwn, address = out.address,
+                        amount = out.value, fee = fee, timestamp = 0,
+                        status = TransactionStatus.Approved,
+                    )
+                }
+
+                val processed = processTransactions(entries, ownAddresses)
+                val existing = _transactions.value
+                _transactions.value = (existing + processed)
+                    .distinctBy { it.uniqueKey }
+                    .sortedByDescending { it.timestamp }
+                cacheTransactionsToDb(processed)
+            } catch (e: Exception) {
+                Log.e(TAG, "searchTransaction failed for $txid", e)
+                _error.value = "Transaction not found: ${txid.take(16)}…"
+            }
+        }
+    }
+
+    /**
+     * Expand consolidate entries and run processTransactions.
+     * Uses consolidateCache to skip getTransactionDetail RPC for
+     * already-expanded txids (the "don't repeat batches" optimization).
+     */
+    private suspend fun expandAndProcess(
+        rawTxs: List<TransactionRecord>,
+        w: com.timecoin.wallet.wallet.WalletManager,
+        client: com.timecoin.wallet.network.MasternodeClient,
+    ): List<TransactionRecord> {
+        val ownAddresses = w.getAddresses().toSet()
+        val consolidateTxs = rawTxs.filter { it.isConsolidate }
+        val normalTxs = rawTxs.filter { !it.isConsolidate }
+        val expandedTxs = mutableListOf<TransactionRecord>()
+
+        // Expand all consolidate txs in parallel — each getTransactionDetail
+        // is an independent RPC call so there is no ordering dependency.
+        val expandedEntries: List<TransactionRecord> = coroutineScope {
+            consolidateTxs.map { ctx ->
+                async {
+                    val cached = consolidateCache[ctx.txid]
+                    if (cached != null) {
+                        Log.d(TAG, "Reusing cached expansion for ${ctx.txid.take(12)}.. (${cached.size} entries)")
+                        return@async cached
+                    }
                     try {
                         val (fee, outputs) = client.getTransactionDetail(ctx.txid)
-                        Log.d(TAG, "Expanding consolidate txid=${ctx.txid.take(12)}.. " +
-                            "${outputs.size} outputs, fee=$fee")
-
-                        // Create a send entry for each output (processTransactions
-                        // will detect self-send and pick smallest as "real" send)
-                        for (out in outputs) {
-                            expandedTxs.add(TransactionRecord(
+                        Log.d(TAG, "Expanding consolidate txid=${ctx.txid.take(12)}.. ${outputs.size} outputs, fee=$fee")
+                        val entries = outputs.map { out ->
+                            Log.d(TAG, "  output[${out.index}]: ${out.value} → ${out.address.take(16)}..")
+                            TransactionRecord(
                                 txid = ctx.txid,
                                 vout = out.index,
                                 isSend = true,
@@ -453,45 +651,51 @@ class WalletService @Inject constructor(
                                 blockHash = ctx.blockHash,
                                 blockHeight = ctx.blockHeight,
                                 confirmations = ctx.confirmations,
-                            ))
-                            Log.d(TAG, "  output[${out.index}]: ${out.value} → ${out.address.take(16)}..")
+                            )
                         }
+                        consolidateCache[ctx.txid] = entries
+                        entries
                     } catch (e: Exception) {
-                        // Fallback: show as fee-only if gettransaction fails
                         Log.w(TAG, "Failed to expand consolidate ${ctx.txid.take(12)}..", e)
-                        if (ctx.fee > 0) {
-                            expandedTxs.add(ctx.copy(
-                                isFee = true,
-                                isConsolidate = false,
-                                address = "Self-send fee",
-                                amount = ctx.fee,
-                            ))
-                        }
+                        if (ctx.fee > 0) listOf(ctx.copy(
+                            isFee = true, isConsolidate = false,
+                            address = "Network Fee", amount = ctx.fee, fee = 0,
+                        )) else emptyList()
                     }
                 }
+            }.awaitAll().flatten()
+        }
+        expandedTxs.addAll(expandedEntries)
 
-                val allTxs = normalTxs + expandedTxs
-                val processed = processTransactions(allTxs, ownAddresses)
-                Log.d(TAG, "refreshTransactions: ${processed.size} after change filtering")
+        val allTxs = normalTxs + expandedTxs
+        val processed = processTransactions(allTxs, ownAddresses)
+        Log.d(TAG, "expandAndProcess: ${rawTxs.size} raw → ${processed.size} processed")
+        return processed
+    }
 
-                _transactions.value = processed
+    private suspend fun cacheTransactionsToDb(processed: List<TransactionRecord>) {
+        val existingMemos = transactionDao.getAll().associate { it.uniqueKey to it.memo }
+        transactionDao.upsertAll(processed.map {
+            TransactionEntity(
+                txid = it.txid, vout = it.vout,
+                isSend = it.isSend, isFee = it.isFee,
+                address = it.address,
+                amount = it.amount, fee = it.fee, timestamp = it.timestamp,
+                status = it.status.name.lowercase(), blockHeight = it.blockHeight,
+                confirmations = it.confirmations,
+                memo = existingMemos[it.uniqueKey] ?: it.memo,
+            )
+        })
+    }
 
-                // Mark transactions as synced
-                _transactionsSynced.value = true
-
-                // Cache to DB
-                transactionDao.upsertAll(processed.map {
-                    TransactionEntity(
-                        txid = it.txid, vout = it.vout,
-                        isSend = it.isSend, isFee = it.isFee,
-                        address = it.address,
-                        amount = it.amount, fee = it.fee, timestamp = it.timestamp,
-                        status = it.status.name.lowercase(), blockHeight = it.blockHeight,
-                        confirmations = it.confirmations,
-                    )
-                })
-            } catch (e: Exception) {
-                Log.e(TAG, "refreshTransactions failed", e)
+    fun saveMemo(tx: TransactionRecord, memo: String) {
+        scope.launch {
+            transactionDao.updateMemo(tx.txid, tx.vout, tx.isSend, tx.isFee, memo)
+            _transactions.value = _transactions.value.map {
+                if (it.uniqueKey == tx.uniqueKey) it.copy(memo = memo) else it
+            }
+            if (_selectedTransaction.value?.uniqueKey == tx.uniqueKey) {
+                _selectedTransaction.value = _selectedTransaction.value?.copy(memo = memo)
             }
         }
     }
@@ -603,7 +807,7 @@ class WalletService @Inject constructor(
         val feeEntries = mutableListOf<TransactionRecord>()
         val seenFeeTxids = mutableSetOf<String>()
         for (tx in filtered) {
-            if (tx.isSend && tx.fee > 0 && tx.txid !in seenFeeTxids) {
+            if (tx.isSend && !tx.isFee && tx.fee > 0 && tx.txid !in seenFeeTxids) {
                 seenFeeTxids.add(tx.txid)
                 feeEntries.add(
                     TransactionRecord(
@@ -681,21 +885,20 @@ class WalletService @Inject constructor(
 
     fun refreshUtxos() {
         scope.launch {
-            try {
-                val w = wallet ?: run { Log.w(TAG, "refreshUtxos: wallet is null"); return@launch }
-                val client = masternodeClient ?: run { Log.w(TAG, "refreshUtxos: client is null"); return@launch }
-                val utxos = client.getUtxos(w.getAddresses())
-                Log.d(TAG, "refreshUtxos: ${utxos.size} utxos, spendable=${utxos.count { it.spendable }}")
-                w.setUtxos(utxos)
-                _utxos.value = utxos
-                _balance.value = _balance.value.copy(
-                    confirmed = utxos.filter { it.spendable }.sumOf { it.amount }
-                )
-                _utxoSynced.value = true
-            } catch (e: Exception) {
-                Log.e(TAG, "refreshUtxos failed", e)
-            }
+            try { refreshUtxosSync() }
+            catch (e: Exception) { Log.e(TAG, "refreshUtxos failed", e) }
         }
+    }
+
+    private suspend fun refreshUtxosSync() {
+        val w = wallet ?: run { Log.w(TAG, "refreshUtxos: wallet is null"); return }
+        val client = masternodeClient ?: run { Log.w(TAG, "refreshUtxos: client is null"); return }
+        val utxos = client.getUtxos(w.getAddresses())
+        val utxoSum = utxos.filter { it.spendable }.sumOf { it.amount }
+        Log.d(TAG, "refreshUtxos: ${utxos.size} utxos, spendable=${utxos.count { it.spendable }}, sum=$utxoSum")
+        w.setUtxos(utxos)
+        _utxos.value = utxos
+        _utxoSynced.value = true
     }
 
     fun sendTransaction(toAddress: String, amount: Long) {
@@ -744,60 +947,139 @@ class WalletService @Inject constructor(
     }
 
     /**
-     * Address discovery: starting from the current address count, generate new
-     * addresses and check each for balance. Keep going until we find a gap of
-     * [GAP_LIMIT] consecutive addresses with no history. This ensures we pick
-     * up all addresses that received funds (e.g. from the desktop wallet).
+     * Trim the address list to only addresses with actual activity.
+     * Uses UTXOs and transaction history (batched RPCs) to determine
+     * which addresses are active, then removes all trailing empty ones.
+     */
+    private suspend fun trimEmptyAddresses(client: MasternodeClient) {
+        val w = wallet ?: return
+        val addrs = w.getAddresses()
+        if (addrs.size <= 1) return
+
+        val activeIndices = mutableSetOf<Int>()
+
+        // Check UTXOs — any address holding coins is active
+        try {
+            val utxos = client.getUtxos(addrs)
+            for (utxo in utxos) {
+                val idx = addrs.indexOf(utxo.address)
+                if (idx >= 0) activeIndices.add(idx)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "trimEmptyAddresses: UTXO check failed", e)
+        }
+
+        // Check transaction history — any address with activity
+        try {
+            val txs = client.getTransactionsMulti(addrs, 200)
+            for (tx in txs) {
+                val idx = addrs.indexOf(tx.address)
+                if (idx >= 0) activeIndices.add(idx)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "trimEmptyAddresses: tx history check failed", e)
+        }
+
+        val lastActive = if (activeIndices.isEmpty()) 0 else activeIndices.max()
+        // Keep only up to lastActive + 1 (no gap padding)
+        val keepCount = lastActive + 1
+        if (keepCount < addrs.size) {
+            Log.d(TAG, "Trimming addresses: ${addrs.size} → $keepCount (last active index=$lastActive)")
+            w.trimAddresses(keepCount)
+            _addresses.value = w.getAddresses()
+            w.save(walletDir, currentPassword)
+        }
+    }
+
+    /**
+     * Address discovery: probe addresses beyond the current set until we
+     * find [GAP_LIMIT] consecutive empty addresses. Only permanently adds
+     * addresses up to lastActive + GAP_LIMIT to maintain the BIP-44 gap
+     * invariant without inflating the address list.
+     */
+    /**
+     * BIP-44 address discovery: probe addresses beyond the current set
+     * using the 20-address gap limit. Only permanently adds addresses
+     * that have actual balance or transaction history.
      */
     private suspend fun discoverAddresses() {
         val w = wallet ?: return
         val client = masternodeClient ?: return
-        val gapLimit = 5
-        var consecutiveEmpty = 0
+        val gapLimit = WalletManager.GAP_LIMIT
 
-        Log.d("WalletService", "Starting address discovery from index ${w.getAddresses().size}")
+        val startIndex = w.getAddresses().size
+        Log.d(TAG, "Starting address discovery from index $startIndex")
 
-        while (consecutiveEmpty < gapLimit) {
-            val addr = w.generateAddress()
+        val activeProbes = mutableListOf<Int>()
+        var windowStart = startIndex
+
+        // Probe in windows of GAP_LIMIT addresses at a time using batched
+        // multi-address calls (2 parallel RPCs instead of GAP_LIMIT×2 sequential).
+        // Stop when an entire window comes back empty.
+        while (true) {
+            val windowIndices = (windowStart until windowStart + gapLimit).toList()
+            val windowAddrs = windowIndices.map { w.deriveAddressAt(it) }
             try {
-                val bal = client.getBalance(addr)
-                val txs = client.getTransactions(addr, 1)
-                if (bal.total > 0 || txs.isNotEmpty()) {
-                    Log.d("WalletService", "Discovered active address: $addr")
-                    consecutiveEmpty = 0
-
-                    // Save as owned contact
-                    val existing = contactDao.getByAddress(addr)
-                    if (existing == null) {
-                        contactDao.upsert(ContactEntity(
-                            address = addr,
-                            label = "Address ${w.getAddresses().size}",
-                            isOwned = true,
-                            derivationIndex = w.getAddresses().size - 1,
-                        ))
-                    }
-                } else {
-                    consecutiveEmpty++
+                val (txs, utxos) = coroutineScope {
+                    val txJob = async { client.getTransactionsMulti(windowAddrs, 1) }
+                    val utxoJob = async { client.getUtxos(windowAddrs) }
+                    txJob.await() to utxoJob.await()
                 }
+                val activeAddrs = mutableSetOf<String>()
+                txs.forEach { activeAddrs.add(it.address) }
+                utxos.forEach { activeAddrs.add(it.address) }
+
+                if (activeAddrs.isEmpty()) break  // full window empty → done
+
+                windowAddrs.forEachIndexed { i, addr ->
+                    if (addr in activeAddrs) {
+                        Log.d(TAG, "Discovered active address[${windowIndices[i]}]: $addr")
+                        activeProbes.add(windowIndices[i])
+                    }
+                }
+                // Advance window past the last active address found
+                windowStart = activeProbes.max() + 1
             } catch (e: Exception) {
-                Log.w("WalletService", "Discovery check failed for $addr: ${e.message}")
-                consecutiveEmpty++
+                Log.w(TAG, "Discovery window [$windowStart..${windowStart + gapLimit - 1}] failed: ${e.message}")
+                break
             }
         }
 
-        // Remove the empty gap addresses we just discovered
-        // by reloading from the saved state before the gap
-        val activeCount = w.getAddresses().size - gapLimit
-        if (activeCount > 0) {
-            Log.d("WalletService", "Discovery complete. Found addresses up to index ${activeCount - 1}")
+        // Only add addresses that actually have history
+        if (activeProbes.isNotEmpty()) {
+            // Must generate sequentially up to the last active probe
+            // (BIP-44 derivation is index-based)
+            val targetCount = activeProbes.max() + 1
+            val toGenerate = targetCount - w.getAddresses().size
+            for (i in 0 until toGenerate) {
+                w.generateAddress()
+            }
+            // Register only active ones as contacts
+            for (idx in activeProbes) {
+                val addr = w.getAddresses()[idx]
+                val existing = contactDao.getByAddress(addr)
+                if (existing == null) {
+                    contactDao.upsert(ContactEntity(
+                        address = addr,
+                        label = "Address ${idx + 1}",
+                        isOwned = true,
+                        derivationIndex = idx,
+                    ))
+                }
+            }
+            // Now trim: remove trailing empty addresses we had to generate
+            // to reach the active ones (keep only up to last active + 1)
+            val lastActive = activeProbes.max()
+            w.trimAddresses(lastActive + 1)
+            Log.d(TAG, "Discovery complete. Added ${activeProbes.size} active addresses, total=${w.getAddresses().size}")
+        } else {
+            Log.d(TAG, "Discovery complete. No new active addresses beyond index $startIndex")
         }
 
-        // Update UI and save
         _addresses.value = w.getAddresses()
         w.save(walletDir, currentPassword)
         _contacts.value = contactDao.getAll()
 
-        // Refresh balances with all discovered addresses
         refreshBalance()
         refreshTransactions()
         refreshUtxos()
@@ -852,6 +1134,37 @@ class WalletService @Inject constructor(
     fun clearError() { _error.value = null }
     fun clearSuccess() { _success.value = null }
 
+    private val _shouldExit = MutableStateFlow(false)
+    val shouldExit: StateFlow<Boolean> = _shouldExit
+
+    /**
+     * Logout: flush any pending wallet save, disconnect, clear state, then
+     * signal the Activity to finish so the process exits cleanly.
+     */
+    fun logout() {
+        scope.launch {
+            // Flush wallet to disk before clearing the in-memory key
+            try {
+                wallet?.save(walletDir, currentPassword)
+            } catch (e: Exception) {
+                Log.w(TAG, "logout: wallet save failed", e)
+            }
+            // Disconnect network
+            masternodeClient?.close()
+            masternodeClient = null
+            wsClient?.stop()
+            wsClient = null
+            pollJob?.cancel()
+            backgroundSyncJob?.cancel()
+            pollJob = null
+            // Clear sensitive state
+            wallet = null
+            currentPassword = null
+            // Signal Activity to finish
+            _shouldExit.value = true
+        }
+    }
+
     /** Lock the wallet: disconnect, clear sensitive state, return to PIN screen. */
     fun lockWallet() {
         Log.d(TAG, "lockWallet: disconnecting and clearing state")
@@ -860,6 +1173,7 @@ class WalletService @Inject constructor(
         wsClient?.stop()
         wsClient = null
         pollJob?.cancel()
+        backgroundSyncJob?.cancel()
         pollJob = null
 
         wallet = null
@@ -883,6 +1197,26 @@ class WalletService @Inject constructor(
         return WalletManager.walletFile(walletDir, network)
     }
 
+    /**
+     * Change the wallet PIN. Verifies current PIN by attempting to load, then
+     * re-saves with the new PIN. Returns true on success.
+     */
+    fun changePin(currentPin: String, newPin: String): Boolean {
+        val w = wallet ?: return false
+        // Verify current PIN matches the in-memory password
+        if (currentPin != currentPassword) return false
+        return try {
+            w.save(walletDir, newPin)
+            currentPassword = newPin
+            // Re-enroll biometric with new PIN if available
+            Log.d(TAG, "changePin: PIN changed successfully")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "changePin failed", e)
+            false
+        }
+    }
+
     /** Delete current wallet, auto-backup first, reset all state. Returns success. */
     fun deleteWallet(): Boolean {
         val network = if (_isTestnet.value) NetworkType.Testnet else NetworkType.Mainnet
@@ -893,6 +1227,7 @@ class WalletService @Inject constructor(
         wsClient?.stop()
         wsClient = null
         pollJob?.cancel()
+        backgroundSyncJob?.cancel()
         pollJob = null
 
         // Delete (with auto-backup)
@@ -934,25 +1269,38 @@ class WalletService @Inject constructor(
     fun reindexWallet() {
         scope.launch {
             _reindexing.value = true
+            _utxoSynced.value = false
+            _transactionsSynced.value = false
             Log.d(TAG, "reindexWallet: clearing cached data and resyncing")
             try {
                 // Clear DB caches
                 transactionDao.deleteAll()
+                consolidateCache.clear()
+                fetchedTxLimit = INITIAL_TX_LIMIT
 
                 // Reset in-memory state
                 _balance.value = Balance()
                 _transactions.value = emptyList()
                 _utxos.value = emptyList()
-                _utxoSynced.value = false
-                _transactionsSynced.value = false
 
-                // Resync from masternode
-                if (masternodeClient != null) {
-                    refreshBalance()
-                    refreshTransactions()
-                    refreshUtxos()
+                // Reset addresses to 1 so discovery re-scans from scratch
+                // and only adds back addresses with actual history
+                val w = wallet
+                if (w != null) {
+                    Log.d(TAG, "Trimming ${w.getAddresses().size} addresses to 1 for rediscovery")
+                    w.trimAddresses(1)
+                    _addresses.value = w.getAddresses()
+                }
+
+                // Resync from masternode — wait for each step to complete
+                val client = masternodeClient
+                if (client != null) {
+                    refreshBalanceSync()
+                    refreshTransactionsSync()
+                    refreshUtxosSync()
                     discoverAddresses()
                     _success.value = "Wallet reindexed successfully"
+                    startBackgroundSync()
                 } else {
                     _error.value = "Not connected to masternode — reconnecting"
                     connectToNetwork()
@@ -994,6 +1342,7 @@ class WalletService @Inject constructor(
         wsClient?.stop()
         wsClient = null
         pollJob?.cancel()
+        backgroundSyncJob?.cancel()
         pollJob = null
 
         val restored = WalletManager.restoreBackup(walletDir, network, backupFile)
@@ -1026,11 +1375,11 @@ class WalletService @Inject constructor(
     }
 
     /** Get the raw time.conf content for editing. */
-    fun getConfigText(): String = ConfigManager.readRaw(walletDir)
+    fun getConfigText(): String = ConfigManager.readRaw(walletDir, _isTestnet.value)
 
     /** Save raw time.conf content. */
     fun saveConfigText(content: String) {
-        ConfigManager.writeRaw(walletDir, content)
+        ConfigManager.writeRaw(walletDir, content, _isTestnet.value)
         _success.value = "Configuration saved"
     }
 
@@ -1040,6 +1389,7 @@ class WalletService @Inject constructor(
         wsClient?.stop()
         wsClient = null
         pollJob?.cancel()
+        backgroundSyncJob?.cancel()
         pollJob = null
         _connectedPeer.value = null
         _wsConnected.value = false
@@ -1057,11 +1407,12 @@ class WalletService @Inject constructor(
                 wsClient?.stop()
                 wsClient = null
                 pollJob?.cancel()
+        backgroundSyncJob?.cancel()
                 pollJob = null
                 _connectedPeer.value = null
                 _wsConnected.value = false
 
-                val config = ConfigManager.load(walletDir)
+                val config = ConfigManager.load(walletDir, _isTestnet.value)
                 val rpcCreds = ConfigManager.rpcCredentials(config)
 
                 if (tryConnect(endpoint, rpcCreds)) {
@@ -1102,6 +1453,7 @@ class WalletService @Inject constructor(
         wsClient?.stop()
         wsClient = null
         pollJob?.cancel()
+        backgroundSyncJob?.cancel()
         pollJob = null
 
         // Reset state
@@ -1148,6 +1500,7 @@ class WalletService @Inject constructor(
         wsClient?.stop()
         masternodeClient?.close()
         pollJob?.cancel()
+        backgroundSyncJob?.cancel()
         scope.cancel()
     }
 }
@@ -1168,4 +1521,5 @@ enum class Screen {
     TransactionDetail,
     Connections,
     Settings,
+    ChangePin,
 }

@@ -1,5 +1,6 @@
 package com.timecoin.wallet.ui
 
+import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -96,6 +97,11 @@ fun WalletApp(service: WalletService) {
     val error by service.error.collectAsState()
     val success by service.success.collectAsState()
     val sharedContact by service.sharedContact.collectAsState()
+    val shouldExit by service.shouldExit.collectAsState()
+    val activity = androidx.compose.ui.platform.LocalContext.current as? Activity
+    LaunchedEffect(shouldExit) {
+        if (shouldExit) activity?.finishAndRemoveTask()
+    }
 
     Scaffold(
         bottomBar = {
@@ -158,6 +164,7 @@ fun WalletApp(service: WalletService) {
                 Screen.TransactionDetail -> TransactionDetailScreen(service)
                 Screen.Connections -> ConnectionsScreen(service)
                 Screen.Settings -> SettingsScreen(service)
+                Screen.ChangePin -> ChangePinScreen(service)
             }
         }
     }
