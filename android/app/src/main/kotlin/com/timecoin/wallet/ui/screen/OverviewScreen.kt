@@ -27,7 +27,7 @@ import com.timecoin.wallet.service.WalletService
 import com.timecoin.wallet.ui.component.formatTime
 import com.timecoin.wallet.ui.component.formatSatoshis
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun OverviewScreen(service: WalletService) {
     val balance by service.balance.collectAsState()
@@ -43,6 +43,10 @@ fun OverviewScreen(service: WalletService) {
     // Build address → label map from contacts
     val labelMap = remember(contacts) {
         contacts.associate { it.address to it.label.ifEmpty { it.name }.ifEmpty { null } }
+    }
+
+    val recentTransactions = remember(transactions) {
+        transactions.take(5)
     }
 
     // Pulse animation: triggers when balance increases
@@ -71,10 +75,71 @@ fun OverviewScreen(service: WalletService) {
         label = "cardScale",
     )
 
+    // Hamburger menu state
+    var menuExpanded by remember { mutableStateOf(false) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("TIME Wallet") },
+                actions = {
+                    Box {
+                        IconButton(onClick = { menuExpanded = true }) {
+                            Icon(Icons.Default.Menu, contentDescription = "Menu")
+                        }
+                        DropdownMenu(
+                            expanded = menuExpanded,
+                            onDismissRequest = { menuExpanded = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Home") },
+                                onClick = { menuExpanded = false },
+                                leadingIcon = { Icon(Icons.Default.Home, contentDescription = null) },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Send") },
+                                onClick = { menuExpanded = false; service.navigateTo(Screen.Send) },
+                                leadingIcon = { Icon(Icons.Default.Send, contentDescription = null) },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Receive") },
+                                onClick = { menuExpanded = false; service.navigateTo(Screen.Receive) },
+                                leadingIcon = { Icon(Icons.Default.QrCode, contentDescription = null) },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Transactions") },
+                                onClick = { menuExpanded = false; service.navigateTo(Screen.Transactions) },
+                                leadingIcon = { Icon(Icons.Default.History, contentDescription = null) },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Connections") },
+                                onClick = { menuExpanded = false; service.navigateTo(Screen.Connections) },
+                                leadingIcon = { Icon(Icons.Default.Wifi, contentDescription = null) },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Settings") },
+                                onClick = { menuExpanded = false; service.navigateTo(Screen.Settings) },
+                                leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                            )
+                            @Suppress("DEPRECATION")
+                            Divider()
+                            DropdownMenuItem(
+                                text = { Text("Logout", color = MaterialTheme.colorScheme.error) },
+                                onClick = { menuExpanded = false; service.lockWallet() },
+                                leadingIcon = { Icon(Icons.Default.Logout, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                            )
+                        }
+                    }
+                },
+            )
+        },
+    ) { innerPadding ->
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .padding(innerPadding)
+            .padding(horizontal = 16.dp),
     ) {
         // Network badge
         if (isTestnet) {
@@ -255,17 +320,21 @@ fun OverviewScreen(service: WalletService) {
             }
         }
 
-        if (transactions.isEmpty()) {
+        val cutoff24h = System.currentTimeMillis() / 1000 - 86_400
+        val recentTxs = recentTransactions
+
+        if (recentTxs.isEmpty()) {
             item {
                 Text(
-                    text = "No transactions yet",
+                    text = if (transactions.isEmpty()) "No transactions yet"
+                           else "No transactions in the last 24 hours",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(vertical = 16.dp),
                 )
             }
         } else {
-            items(transactions, key = { it.uniqueKey }) { tx ->
+            items(recentTxs, key = { it.uniqueKey }) { tx ->
                 TransactionRow(
                     tx = tx,
                     label = labelMap[tx.address],
@@ -277,6 +346,8 @@ fun OverviewScreen(service: WalletService) {
             }
         }
     }
+
+    } // end Scaffold
 }
 
 @Composable
