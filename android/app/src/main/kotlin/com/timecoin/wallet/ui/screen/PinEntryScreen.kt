@@ -263,6 +263,12 @@ private fun PinEntryLayout(
         if (loading) {
             Spacer(Modifier.height(16.dp))
             CircularProgressIndicator(modifier = Modifier.size(32.dp))
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Decrypting wallet, please wait…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         } else {
             Spacer(Modifier.height(16.dp))
 

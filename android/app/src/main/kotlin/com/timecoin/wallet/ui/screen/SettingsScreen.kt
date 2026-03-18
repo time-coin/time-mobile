@@ -18,10 +18,13 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.fragment.app.FragmentActivity
 import com.timecoin.wallet.crypto.Address
+import com.timecoin.wallet.crypto.BiometricHelper
 import com.timecoin.wallet.crypto.NetworkType
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
+import com.timecoin.wallet.ui.component.AppHamburgerMenu
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -52,6 +55,7 @@ fun SettingsScreen(service: WalletService) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                     }
                 },
+                actions = { AppHamburgerMenu(service) },
             )
         },
     ) { padding ->
@@ -219,6 +223,9 @@ fun SettingsScreen(service: WalletService) {
             var showDeleteConfirm by remember { mutableStateOf(false) }
             var showReindexConfirm by remember { mutableStateOf(false) }
 
+            val biometricAvailable = remember { BiometricHelper.isAvailable(context) }
+            var biometricEnrolled by remember { mutableStateOf(BiometricHelper.isEnrolled(context)) }
+
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     // Change PIN
@@ -229,6 +236,51 @@ fun SettingsScreen(service: WalletService) {
                         Icon(Icons.Default.Pin, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp))
                         Text("Change PIN")
+                    }
+
+                    // Biometric unlock toggle (only shown if device supports it)
+                    if (biometricAvailable) {
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.Fingerprint,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Spacer(Modifier.width(12.dp))
+                                Column {
+                                    Text("Biometric Unlock", style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        if (biometricEnrolled) "Fingerprint unlock enabled" else "Use fingerprint to unlock",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            Switch(
+                                checked = biometricEnrolled,
+                                onCheckedChange = { enable ->
+                                    if (enable) {
+                                        val activity = context as? FragmentActivity
+                                        if (activity != null) {
+                                            // Need the current PIN — prompt for it first via WalletService
+                                            service.enrollBiometric(activity) { success ->
+                                                if (success) biometricEnrolled = true
+                                            }
+                                        }
+                                    } else {
+                                        BiometricHelper.unenroll(context)
+                                        biometricEnrolled = false
+                                    }
+                                },
+                            )
+                        }
                     }
 
                     Spacer(Modifier.height(8.dp))
@@ -366,13 +418,19 @@ fun SettingsScreen(service: WalletService) {
             Spacer(Modifier.height(24.dp))
 
             // ── About ──
+            val appVersion = remember {
+                try {
+                    val info = context.packageManager.getPackageInfo(context.packageName, 0)
+                    info.versionName ?: "—"
+                } catch (_: Exception) { "—" }
+            }
             Text("About", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("Version")
-                        Text("1.0.0")
+                        Text(appVersion, fontWeight = FontWeight.Medium)
                     }
                     Spacer(Modifier.height(8.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {

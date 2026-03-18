@@ -6,6 +6,11 @@ android/local.properties
 *.apk
 *.aab
 
+# Signing — never commit these
+*.jks
+*.keystore
+android/keystore.properties
+
 # IDE
 .idea/
 *.iml
@@ -19,3 +24,6 @@ node_modules/
 
 test_screen*.png
 debug_screen*.png
+
+# Claude Code
+CLAUDE.md

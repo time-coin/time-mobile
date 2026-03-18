@@ -27,3 +27,6 @@
 # Keep Hilt
 -keep class dagger.hilt.** { *; }
 -dontwarn dagger.hilt.**
+
+# Suppress missing SLF4J static binder (not needed on Android)
+-dontwarn org.slf4j.impl.StaticLoggerBinder

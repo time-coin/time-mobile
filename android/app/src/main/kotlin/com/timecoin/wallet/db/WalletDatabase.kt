@@ -1,6 +1,8 @@
 package com.timecoin.wallet.db
 
 import androidx.room.*
+import com.timecoin.wallet.model.PaymentRequest
+import com.timecoin.wallet.model.PaymentRequestStatus
 
 /** Contact / address book entry stored in Room. */
 @Entity(tableName = "contacts")
@@ -104,6 +106,97 @@ interface TransactionDao {
     suspend fun deleteAll()
 }
 
+/** Payment request stored locally (both outgoing and incoming). */
+@Entity(tableName = "payment_requests")
+data class PaymentRequestEntity(
+    @PrimaryKey val id: String,
+    val requesterAddress: String,
+    val payerAddress: String,
+    val amountSats: Long,
+    val memo: String = "",
+    val requesterName: String = "",
+    val status: String = "pending",
+    val isOutgoing: Boolean = true,
+    val createdAt: Long = System.currentTimeMillis() / 1000,
+    val updatedAt: Long = System.currentTimeMillis() / 1000,
+    val paidTxid: String = "",
+    /** True once the masternode has confirmed receipt of this outgoing request. */
+    val delivered: Boolean = false,
+    /** True once the payer has opened and viewed this request. */
+    val viewed: Boolean = false,
+    /** Unix timestamp when this request expires (default: 7 days after creation). */
+    val expiresAt: Long = 0L,
+) {
+    fun toPaymentRequest() = PaymentRequest(
+        id = id,
+        requesterAddress = requesterAddress,
+        payerAddress = payerAddress,
+        amountSats = amountSats,
+        memo = memo,
+        requesterName = requesterName,
+        status = when (status) {
+            "accepted" -> PaymentRequestStatus.Accepted
+            "declined" -> PaymentRequestStatus.Declined
+            "cancelled" -> PaymentRequestStatus.Cancelled
+            "paid" -> PaymentRequestStatus.Paid
+            else -> PaymentRequestStatus.Pending
+        },
+        isOutgoing = isOutgoing,
+        createdAt = createdAt,
+        updatedAt = updatedAt,
+        paidTxid = paidTxid,
+        delivered = delivered,
+        viewed = viewed,
+        expiresAt = expiresAt,
+    )
+}
+
+@Dao
+interface PaymentRequestDao {
+    @Query("SELECT * FROM payment_requests ORDER BY createdAt DESC")
+    suspend fun getAll(): List<PaymentRequestEntity>
+
+    @Query("SELECT * FROM payment_requests WHERE id = :id")
+    suspend fun getById(id: String): PaymentRequestEntity?
+
+    @Upsert
+    suspend fun upsert(req: PaymentRequestEntity)
+
+    @Query("UPDATE payment_requests SET status = :status, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun updateStatus(id: String, status: String, updatedAt: Long)
+
+    @Query("UPDATE payment_requests SET status = 'paid', paidTxid = :txid, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun markPaid(id: String, txid: String, updatedAt: Long)
+
+    @Query("DELETE FROM payment_requests WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("UPDATE payment_requests SET delivered = 1 WHERE id = :id")
+    suspend fun markDelivered(id: String)
+
+    @Query("UPDATE payment_requests SET viewed = 1 WHERE id = :id")
+    suspend fun markViewed(id: String)
+
+    @Query("SELECT * FROM payment_requests WHERE status = 'pending' AND expiresAt > 0 AND expiresAt <= :now")
+    suspend fun getExpired(now: Long): List<PaymentRequestEntity>
+
+    @Query("SELECT * FROM payment_requests WHERE isOutgoing = 1 AND delivered = 0 AND status = 'pending'")
+    suspend fun getUndeliveredOutgoing(): List<PaymentRequestEntity>
+
+    /**
+     * Count active outgoing requests to a given payer in the last [windowSecs] seconds.
+     * Cancelled requests are excluded so corrections are always allowed.
+     */
+    @Query("""
+        SELECT COUNT(*) FROM payment_requests
+        WHERE isOutgoing = 1
+          AND payerAddress = :address
+          AND status NOT IN ('cancelled')
+          AND createdAt > :since
+    """)
+    suspend fun countActiveOutgoingTo(address: String, since: Long): Int
+}
+
 @Dao
 interface SettingDao {
     @Query("SELECT value FROM settings WHERE `key` = :key")
@@ -117,8 +210,8 @@ interface SettingDao {
 }
 
 @Database(
-    entities = [ContactEntity::class, TransactionEntity::class, SettingEntity::class],
-    version = 4,
+    entities = [ContactEntity::class, TransactionEntity::class, SettingEntity::class, PaymentRequestEntity::class],
+    version = 8,
     exportSchema = false,
 )
 @TypeConverters()
@@ -126,4 +219,5 @@ abstract class WalletDatabase : RoomDatabase() {
     abstract fun contactDao(): ContactDao
     abstract fun transactionDao(): TransactionDao
     abstract fun settingDao(): SettingDao
+    abstract fun paymentRequestDao(): PaymentRequestDao
 }

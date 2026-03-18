@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 import com.timecoin.wallet.crypto.Address
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
+import com.timecoin.wallet.ui.component.formatSatoshis
 import com.timecoin.wallet.ui.screen.*
 import com.timecoin.wallet.ui.theme.TimeCoinWalletTheme
 import dagger.hilt.android.AndroidEntryPoint
@@ -97,10 +98,14 @@ fun WalletApp(service: WalletService) {
     val error by service.error.collectAsState()
     val success by service.success.collectAsState()
     val sharedContact by service.sharedContact.collectAsState()
+    val incomingPaymentRequest by service.incomingPaymentRequest.collectAsState()
     val shouldExit by service.shouldExit.collectAsState()
     val activity = androidx.compose.ui.platform.LocalContext.current as? Activity
     LaunchedEffect(shouldExit) {
-        if (shouldExit) activity?.finishAndRemoveTask()
+        if (shouldExit) {
+            service.clearShouldExit()
+            activity?.finishAndRemoveTask()
+        }
     }
 
     Scaffold(
@@ -165,6 +170,16 @@ fun WalletApp(service: WalletService) {
                 Screen.Connections -> ConnectionsScreen(service)
                 Screen.Settings -> SettingsScreen(service)
                 Screen.ChangePin -> ChangePinScreen(service)
+                Screen.PaymentRequest -> PaymentRequestScreen(service)
+                Screen.PaymentRequestQrScanner -> QrScannerScreen(
+                    onResult = { address ->
+                        service.setScannedAddress(address)
+                        service.navigateTo(Screen.PaymentRequest)
+                    },
+                    onBack = { service.navigateTo(Screen.PaymentRequest) },
+                )
+                Screen.PaymentRequestReview -> PaymentRequestReviewScreen(service)
+                Screen.PaymentRequests -> PaymentRequestsScreen(service)
             }
         }
     }
@@ -190,6 +205,18 @@ fun WalletApp(service: WalletService) {
             confirmButton = {
                 TextButton(onClick = { service.clearSuccess() }) { Text("OK") }
             },
+        )
+    }
+
+    // Incoming payment request notification dialog
+    incomingPaymentRequest?.let { req ->
+        IncomingPaymentRequestDialog(
+            requesterName = req.requesterName,
+            requesterAddress = req.requesterAddress,
+            amountSats = req.amountSats,
+            memo = req.memo,
+            onReview = { service.reviewPaymentRequest(req) },
+            onDismiss = { service.dismissIncomingRequest() },
         )
     }
 
@@ -285,6 +312,69 @@ private fun SharedContactDialog(
                     Text("Send TIME")
                 }
             }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Dismiss") }
+        },
+    )
+}
+
+@Composable
+private fun IncomingPaymentRequestDialog(
+    requesterName: String,
+    requesterAddress: String,
+    amountSats: Long,
+    memo: String,
+    onReview: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                Icons.Default.RequestPage,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(32.dp),
+            )
+        },
+        title = { Text("Payment Request Received") },
+        text = {
+            Column {
+                Text(
+                    "Someone has requested a TIME payment from you.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                if (requesterName.isNotBlank()) {
+                    Text("From", style = MaterialTheme.typography.labelMedium)
+                    Text(requesterName, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                    Spacer(Modifier.height(8.dp))
+                }
+                Text("Address", style = MaterialTheme.typography.labelMedium)
+                Text(
+                    requesterAddress.take(14) + "…" + requesterAddress.takeLast(8),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text("Amount", style = MaterialTheme.typography.labelMedium)
+                Text(
+                    "${formatSatoshis(amountSats)} TIME",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                if (memo.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("Memo", style = MaterialTheme.typography.labelMedium)
+                    Text(memo, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onReview) { Text("Review") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Dismiss") }

@@ -206,6 +206,81 @@ class MasternodeClient(
         return Pair(fee, outputs)
     }
 
+    /**
+     * Send a payment request to another wallet via masternode relay.
+     * The masternode forwards it as a `payment_request` WS event to the payer's subscribed address.
+     */
+    suspend fun sendPaymentRequest(
+        requestId: String,
+        requesterAddress: String,
+        payerAddress: String,
+        amountSats: Long,
+        memo: String,
+        requesterName: String,
+    ): Boolean = try {
+        rpcCall("sendpaymentrequest", buildJsonArray {
+            add(buildJsonObject {
+                put("id", requestId)
+                put("requester_address", requesterAddress)
+                put("payer_address", payerAddress)
+                put("amount", amountSats.toDouble() / 100_000_000.0)
+                put("memo", memo)
+                put("requester_name", requesterName)
+            })
+        })
+        true
+    } catch (e: Exception) {
+        Log.w("MasternodeClient", "sendPaymentRequest failed: ${e.message}")
+        false
+    }
+
+    /** Notify the masternode that the payer has viewed a payment request. Requester is notified via `payment_request_viewed`. */
+    suspend fun markPaymentRequestViewed(requestId: String, payerAddress: String): Boolean = try {
+        rpcCall("markpaymentrequestviewed", buildJsonArray {
+            add(buildJsonObject {
+                put("id", requestId)
+                put("payer_address", payerAddress)
+            })
+        })
+        true
+    } catch (e: Exception) {
+        Log.w("MasternodeClient", "markPaymentRequestViewed failed: ${e.message}")
+        false
+    }
+
+    /** Cancel a previously sent payment request. Masternode notifies payer via `payment_request_cancelled`. */
+    suspend fun cancelPaymentRequest(requestId: String, requesterAddress: String): Boolean = try {
+        rpcCall("cancelpaymentrequest", buildJsonArray {
+            add(buildJsonObject {
+                put("id", requestId)
+                put("requester_address", requesterAddress)
+            })
+        })
+        true
+    } catch (e: Exception) {
+        Log.w("MasternodeClient", "cancelPaymentRequest failed: ${e.message}")
+        false
+    }
+
+    /** Respond to a payment request. Masternode notifies requester via `payment_request_response`. */
+    suspend fun respondToPaymentRequest(
+        requestId: String,
+        payerAddress: String,
+        accepted: Boolean,
+    ): Boolean = try {
+        rpcCall("respondpaymentrequest", buildJsonArray {
+            add(buildJsonObject {
+                put("id", requestId)
+                put("payer_address", payerAddress)
+                put("accepted", accepted)
+            })
+        })
+        true
+    } catch (e: Exception) {
+        Log.w("MasternodeClient", "respondToPaymentRequest failed: ${e.message}")
+        false
+    }
+
     fun close() { client.close() }
 
     // ── Internal ──
@@ -238,7 +313,12 @@ class MasternodeClient(
     }
 
     private fun parseTransactionList(result: JsonElement): List<TransactionRecord> {
-        return result.jsonArray.mapNotNull { tx ->
+        val txArray = if (result is JsonObject && result.containsKey("transactions")) {
+            result["transactions"]?.jsonArray ?: return emptyList()
+        } else {
+            result.jsonArray
+        }
+        return txArray.mapNotNull { tx ->
             val obj = tx.jsonObject
             val txid = obj["txid"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
             val category = obj["category"]?.jsonPrimitive?.contentOrNull ?: "unknown"

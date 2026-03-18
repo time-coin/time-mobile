@@ -12,8 +12,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
+import com.timecoin.wallet.ui.component.AppHamburgerMenu
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConnectionsScreen(service: WalletService) {
     val peers by service.peers.collectAsState()
@@ -22,10 +25,24 @@ fun ConnectionsScreen(service: WalletService) {
     val wsConnected by service.wsConnected.collectAsState()
     val isTestnet by service.isTestnet.collectAsState()
 
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Peers") },
+                navigationIcon = {
+                    IconButton(onClick = { service.navigateTo(Screen.Overview) }) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = { AppHamburgerMenu(service) },
+            )
+        },
+    ) { padding ->
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
+            .padding(padding)
             .padding(16.dp),
     ) {
         Text(
@@ -164,7 +181,8 @@ fun ConnectionsScreen(service: WalletService) {
                 }
             }
         }
-    }
+    } // end Column
+    } // end Scaffold content
 }
 
 @Composable

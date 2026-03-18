@@ -1,6 +1,8 @@
 package com.timecoin.wallet.ui.screen
 
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -19,15 +21,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import com.timecoin.wallet.model.Balance
+import com.timecoin.wallet.model.PaymentRequestStatus
 import com.timecoin.wallet.model.TransactionRecord
 import com.timecoin.wallet.model.TransactionStatus
+import com.timecoin.wallet.ui.component.AppHamburgerMenu
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
 import com.timecoin.wallet.ui.component.formatTime
 import com.timecoin.wallet.ui.component.formatSatoshis
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun OverviewScreen(service: WalletService) {
     val balance by service.balance.collectAsState()
@@ -75,62 +80,28 @@ fun OverviewScreen(service: WalletService) {
         label = "cardScale",
     )
 
-    // Hamburger menu state
-    var menuExpanded by remember { mutableStateOf(false) }
+    // New transaction highlight tracking
+    var knownTxKeys by remember { mutableStateOf<Set<String>?>(null) }
+    var highlightedTxKeys by remember { mutableStateOf(setOf<String>()) }
+    LaunchedEffect(recentTransactions) {
+        val currentKeys = recentTransactions.map { it.uniqueKey }.toSet()
+        val known = knownTxKeys
+        if (known != null) {
+            val newKeys = currentKeys - known
+            if (newKeys.isNotEmpty()) {
+                highlightedTxKeys = newKeys
+                delay(1500)
+                highlightedTxKeys = emptySet()
+            }
+        }
+        knownTxKeys = currentKeys
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("TIME Wallet") },
-                actions = {
-                    Box {
-                        IconButton(onClick = { menuExpanded = true }) {
-                            Icon(Icons.Default.Menu, contentDescription = "Menu")
-                        }
-                        DropdownMenu(
-                            expanded = menuExpanded,
-                            onDismissRequest = { menuExpanded = false },
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Home") },
-                                onClick = { menuExpanded = false },
-                                leadingIcon = { Icon(Icons.Default.Home, contentDescription = null) },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Send") },
-                                onClick = { menuExpanded = false; service.navigateTo(Screen.Send) },
-                                leadingIcon = { Icon(Icons.Default.Send, contentDescription = null) },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Receive") },
-                                onClick = { menuExpanded = false; service.navigateTo(Screen.Receive) },
-                                leadingIcon = { Icon(Icons.Default.QrCode, contentDescription = null) },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Transactions") },
-                                onClick = { menuExpanded = false; service.navigateTo(Screen.Transactions) },
-                                leadingIcon = { Icon(Icons.Default.History, contentDescription = null) },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Connections") },
-                                onClick = { menuExpanded = false; service.navigateTo(Screen.Connections) },
-                                leadingIcon = { Icon(Icons.Default.Wifi, contentDescription = null) },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Settings") },
-                                onClick = { menuExpanded = false; service.navigateTo(Screen.Settings) },
-                                leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                            )
-                            @Suppress("DEPRECATION")
-                            Divider()
-                            DropdownMenuItem(
-                                text = { Text("Logout", color = MaterialTheme.colorScheme.error) },
-                                onClick = { menuExpanded = false; service.logout() },
-                                leadingIcon = { Icon(Icons.Default.Logout, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-                            )
-                        }
-                    }
-                },
+                actions = { AppHamburgerMenu(service) },
             )
         },
     ) { innerPadding ->
@@ -340,6 +311,8 @@ fun OverviewScreen(service: WalletService) {
                     label = labelMap[tx.address],
                     decimalPlaces = decimalPlaces,
                     onClick = { service.showTransaction(tx) },
+                    isHighlighted = tx.uniqueKey in highlightedTxKeys,
+                    modifier = Modifier.animateItemPlacement(),
                 )
                 @Suppress("DEPRECATION")
                 Divider()
@@ -351,10 +324,26 @@ fun OverviewScreen(service: WalletService) {
 }
 
 @Composable
-fun TransactionRow(tx: TransactionRecord, label: String?, decimalPlaces: Int, onClick: () -> Unit = {}) {
+fun TransactionRow(
+    tx: TransactionRecord,
+    label: String?,
+    decimalPlaces: Int,
+    onClick: () -> Unit = {},
+    isHighlighted: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    val glowAlpha by animateFloatAsState(
+        targetValue = if (isHighlighted) 0.8f else 0f,
+        animationSpec = tween(durationMillis = 500, easing = FastOutSlowInEasing),
+        label = "txGlow",
+    )
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
+            .then(
+                if (glowAlpha > 0f) Modifier.background(Color(0xFF00C850).copy(alpha = glowAlpha * 0.12f))
+                else Modifier
+            )
             .clickable(onClick = onClick)
             .padding(vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -393,6 +382,15 @@ fun TransactionRow(tx: TransactionRecord, label: String?, decimalPlaces: Int, on
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (tx.memo.isNotBlank()) {
+                Text(
+                    text = tx.memo,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
         Column(horizontalAlignment = Alignment.End) {
             Text(

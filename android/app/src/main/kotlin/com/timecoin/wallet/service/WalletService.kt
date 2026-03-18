@@ -2,7 +2,9 @@ package com.timecoin.wallet.service
 
 import android.content.Context
 import android.util.Log
+import androidx.room.Room
 import com.timecoin.wallet.crypto.*
+import com.timecoin.wallet.crypto.BiometricHelper
 import com.timecoin.wallet.db.*
 import com.timecoin.wallet.model.*
 import com.timecoin.wallet.network.*
@@ -20,11 +22,23 @@ import javax.inject.Singleton
 @Singleton
 class WalletService @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val contactDao: ContactDao,
-    private val transactionDao: TransactionDao,
-    private val settingDao: SettingDao,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // Separate databases for mainnet and testnet so data never mixes.
+    private val mainnetDb by lazy {
+        Room.databaseBuilder(context, WalletDatabase::class.java, "wallet.db")
+            .fallbackToDestructiveMigration().build()
+    }
+    private val testnetDb by lazy {
+        Room.databaseBuilder(context, WalletDatabase::class.java, "wallet-testnet.db")
+            .fallbackToDestructiveMigration().build()
+    }
+    private val currentDb get() = if (_isTestnet.value) testnetDb else mainnetDb
+    private val contactDao get() = currentDb.contactDao()
+    private val transactionDao get() = currentDb.transactionDao()
+    private val settingDao get() = currentDb.settingDao()
+    private val paymentRequestDao get() = currentDb.paymentRequestDao()
 
     companion object {
         private const val TAG = "WalletService"
@@ -135,6 +149,23 @@ class WalletService @Inject constructor(
     private val _reindexing = MutableStateFlow(false)
     val reindexing: StateFlow<Boolean> = _reindexing
 
+    // ── Payment requests ──
+    private val _paymentRequests = MutableStateFlow<List<PaymentRequest>>(emptyList())
+    val paymentRequests: StateFlow<List<PaymentRequest>> = _paymentRequests
+
+    /** Most recent unreviewed incoming request — drives the notification dialog in WalletApp. */
+    private val _incomingPaymentRequest = MutableStateFlow<PaymentRequest?>(null)
+    val incomingPaymentRequest: StateFlow<PaymentRequest?> = _incomingPaymentRequest
+
+    /** Request currently being reviewed on PaymentRequestReviewScreen. */
+    private val _selectedPaymentRequest = MutableStateFlow<PaymentRequest?>(null)
+    val selectedPaymentRequest: StateFlow<PaymentRequest?> = _selectedPaymentRequest
+
+    /** Max non-cancelled outgoing requests to the same address per hour. */
+    private val RATE_LIMIT_MAX = 3
+    private val RATE_LIMIT_WINDOW_SECS = 3600L
+    private val PAYMENT_REQUEST_EXPIRY_SECS = 7 * 24 * 3600L // 7 days
+
     private val _backups = MutableStateFlow<List<java.io.File>>(emptyList())
     val backups: StateFlow<List<java.io.File>> = _backups
 
@@ -155,6 +186,8 @@ class WalletService @Inject constructor(
         scope.launch {
             val saved = settingDao.get("decimal_places")
             if (saved != null) _decimalPlaces.value = saved.toIntOrNull() ?: 2
+            expirePaymentRequests()
+            _paymentRequests.value = paymentRequestDao.getAll().map { it.toPaymentRequest() }
         }
     }
 
@@ -388,7 +421,10 @@ class WalletService @Inject constructor(
         scope.launch {
             wsClient!!.events.collect { event ->
                 when (event) {
-                    is WsEvent.Connected -> _wsConnected.value = true
+                    is WsEvent.Connected -> {
+                        _wsConnected.value = true
+                        retryUndeliveredPaymentRequests()
+                    }
                     is WsEvent.Disconnected -> _wsConnected.value = false
                     is WsEvent.TransactionReceived -> {
                         // Immediately add transaction to UI for instant feedback
@@ -421,6 +457,56 @@ class WalletService @Inject constructor(
                     is WsEvent.TransactionRejected -> {
                         _error.value = "Transaction rejected: ${event.reason}"
                     }
+                    is WsEvent.PaymentRequestReceived -> {
+                        val r = event.request
+                        val entity = PaymentRequestEntity(
+                            id = r.id,
+                            requesterAddress = r.requesterAddress,
+                            payerAddress = r.payerAddress,
+                            amountSats = r.amountSats,
+                            memo = r.memo,
+                            requesterName = r.requesterName,
+                            status = "pending",
+                            isOutgoing = false,
+                            createdAt = r.timestamp,
+                            updatedAt = r.timestamp,
+                        )
+                        paymentRequestDao.upsert(entity)
+                        val req = entity.toPaymentRequest()
+                        _paymentRequests.value = paymentRequestDao.getAll().map { it.toPaymentRequest() }
+                        _incomingPaymentRequest.value = req
+                    }
+                    is WsEvent.PaymentRequestCancelled -> {
+                        paymentRequestDao.updateStatus(
+                            id = event.requestId,
+                            status = "cancelled",
+                            updatedAt = System.currentTimeMillis() / 1000,
+                        )
+                        _paymentRequests.value = paymentRequestDao.getAll().map { it.toPaymentRequest() }
+                        if (_incomingPaymentRequest.value?.id == event.requestId) {
+                            _incomingPaymentRequest.value = null
+                        }
+                        if (_selectedPaymentRequest.value?.id == event.requestId) {
+                            _selectedPaymentRequest.value = _selectedPaymentRequest.value?.copy(
+                                status = PaymentRequestStatus.Cancelled
+                            )
+                        }
+                    }
+                    is WsEvent.PaymentRequestResponse -> {
+                        val status = if (event.accepted) "accepted" else "declined"
+                        paymentRequestDao.updateStatus(
+                            id = event.requestId,
+                            status = status,
+                            updatedAt = System.currentTimeMillis() / 1000,
+                        )
+                        _paymentRequests.value = paymentRequestDao.getAll().map { it.toPaymentRequest() }
+                        val msg = if (event.accepted) "Payment request accepted!" else "Payment request declined."
+                        _success.value = msg
+                    }
+                    is WsEvent.PaymentRequestViewed -> {
+                        paymentRequestDao.markViewed(event.requestId)
+                        _paymentRequests.value = paymentRequestDao.getAll().map { it.toPaymentRequest() }
+                    }
                 }
             }
         }
@@ -437,6 +523,7 @@ class WalletService @Inject constructor(
                     refreshTransactions()
                     refreshUtxos()
                     masternodeClient?.let { _health.value = it.healthCheck() }
+                    expirePaymentRequests()
                 } catch (e: Exception) {
                     Log.w(TAG, "Polling cycle failed", e)
                 }
@@ -637,22 +724,25 @@ class WalletService @Inject constructor(
                     try {
                         val (fee, outputs) = client.getTransactionDetail(ctx.txid)
                         Log.d(TAG, "Expanding consolidate txid=${ctx.txid.take(12)}.. ${outputs.size} outputs, fee=$fee")
-                        val entries = outputs.map { out ->
-                            Log.d(TAG, "  output[${out.index}]: ${out.value} → ${out.address.take(16)}..")
-                            TransactionRecord(
-                                txid = ctx.txid,
-                                vout = out.index,
-                                isSend = true,
-                                address = out.address,
-                                amount = out.value,
-                                fee = fee,
-                                timestamp = ctx.timestamp,
-                                status = ctx.status,
-                                blockHash = ctx.blockHash,
-                                blockHeight = ctx.blockHeight,
-                                confirmations = ctx.confirmations,
-                            )
-                        }
+                        outputs.forEach { Log.d(TAG, "  output[${it.index}]: ${it.value} → ${it.address.take(16)}..") }
+                        // Use the largest output as the single representative entry.
+                        // Consolidations may include small dust/change outputs; picking
+                        // the largest avoids the "smallest = real send" heuristic
+                        // misidentifying a dust output as the consolidated amount.
+                        val main = outputs.maxByOrNull { it.value } ?: outputs.first()
+                        val entries = listOf(TransactionRecord(
+                            txid = ctx.txid,
+                            vout = main.index,
+                            isSend = true,
+                            address = main.address,
+                            amount = main.value,
+                            fee = fee,
+                            timestamp = ctx.timestamp,
+                            status = ctx.status,
+                            blockHash = ctx.blockHash,
+                            blockHeight = ctx.blockHeight,
+                            confirmations = ctx.confirmations,
+                        ))
                         consolidateCache[ctx.txid] = entries
                         entries
                     } catch (e: Exception) {
@@ -870,11 +960,13 @@ class WalletService @Inject constructor(
                 "amount=${tx.amount} addr=${tx.address.take(16)}..")
         }
 
-        // 6. Combine and sort by timestamp descending, with secondary order
-        // within the same timestamp: RECV first, then FEE, then SEND
-        // (so the logical flow Send→Fee→Receive reads bottom-to-top)
+        // 6. Combine and sort: group entries by txid, order groups by their
+        // max timestamp descending, then within each txid: RECV, FEE, SEND.
+        val groupTimestamp = result.groupBy { it.txid }
+            .mapValues { (_, entries) -> entries.maxOf { it.timestamp } }
         return result.sortedWith(
-            compareByDescending<TransactionRecord> { it.timestamp }
+            compareByDescending<TransactionRecord> { groupTimestamp[it.txid] ?: it.timestamp }
+                .thenBy { it.txid }
                 .thenBy { when {
                     !it.isSend && !it.isFee -> 0  // RECV first (top)
                     it.isFee -> 1                 // FEE middle
@@ -1086,22 +1178,19 @@ class WalletService @Inject constructor(
     }
 
     fun saveContact(name: String, address: String, email: String = "", phone: String = "") {
+        // Optimistic update — show contact immediately before DB write completes
+        val now = System.currentTimeMillis() / 1000
+        val existing = _contacts.value.find { it.address == address }
+        val optimistic = existing?.copy(name = name, email = email, phone = phone, updatedAt = now)
+            ?: ContactEntity(address = address, name = name, email = email, phone = phone, createdAt = now, updatedAt = now)
+        _contacts.value = (_contacts.value.filter { it.address != address } + optimistic)
+            .sortedByDescending { it.updatedAt }
+
         scope.launch {
-            val existing = contactDao.getByAddress(address)
             if (existing != null) {
-                contactDao.upsert(existing.copy(
-                    name = name,
-                    email = email,
-                    phone = phone,
-                    updatedAt = System.currentTimeMillis() / 1000,
-                ))
+                contactDao.upsert(optimistic)
             } else {
-                contactDao.upsert(ContactEntity(
-                    address = address,
-                    name = name,
-                    email = email,
-                    phone = phone,
-                ))
+                contactDao.upsert(optimistic)
             }
             _contacts.value = contactDao.getAll()
         }
@@ -1134,8 +1223,215 @@ class WalletService @Inject constructor(
     fun clearError() { _error.value = null }
     fun clearSuccess() { _success.value = null }
 
+    // ── Payment request methods ──
+
+    /**
+     * Send a payment request to [payerAddress] asking them to send [amountSats] to
+     * our primary wallet address. Rate-limited to [RATE_LIMIT_MAX] active requests
+     * per target per hour; cancelled requests don't count toward the limit.
+     */
+    fun sendPaymentRequest(
+        payerAddress: String,
+        amountSats: Long,
+        memo: String = "",
+        requesterName: String = "",
+    ) {
+        scope.launch {
+            val w = wallet ?: run { _error.value = "Wallet not loaded"; return@launch }
+            val client = masternodeClient ?: run { _error.value = "Not connected"; return@launch }
+
+            val since = System.currentTimeMillis() / 1000 - RATE_LIMIT_WINDOW_SECS
+            val activeCount = paymentRequestDao.countActiveOutgoingTo(payerAddress, since)
+            if (activeCount >= RATE_LIMIT_MAX) {
+                _error.value = "Too many requests to this address. Wait before sending another, or cancel a previous one."
+                return@launch
+            }
+
+            val requestId = java.util.UUID.randomUUID().toString()
+            val requesterAddress = w.primaryAddress
+            val now = System.currentTimeMillis() / 1000
+
+            val entity = PaymentRequestEntity(
+                id = requestId,
+                requesterAddress = requesterAddress,
+                payerAddress = payerAddress,
+                amountSats = amountSats,
+                memo = memo,
+                requesterName = requesterName,
+                status = "pending",
+                isOutgoing = true,
+                createdAt = now,
+                updatedAt = now,
+                expiresAt = now + PAYMENT_REQUEST_EXPIRY_SECS,
+            )
+            paymentRequestDao.upsert(entity)
+            _paymentRequests.value = paymentRequestDao.getAll().map { it.toPaymentRequest() }
+            // Navigate to the list so the user sees their sent request immediately
+            _screen.value = Screen.PaymentRequests
+
+            val delivered = client.sendPaymentRequest(
+                requestId = requestId,
+                requesterAddress = requesterAddress,
+                payerAddress = payerAddress,
+                amountSats = amountSats,
+                memo = memo,
+                requesterName = requesterName,
+            )
+            if (delivered) {
+                paymentRequestDao.markDelivered(requestId)
+            }
+            _success.value = "Payment request sent!"
+        }
+    }
+
+    /** Mark pending payment requests as expired when their expiry time has passed. */
+    private suspend fun expirePaymentRequests() {
+        val now = System.currentTimeMillis() / 1000
+        val expired = paymentRequestDao.getExpired(now)
+        if (expired.isEmpty()) return
+        for (entity in expired) {
+            paymentRequestDao.updateStatus(id = entity.id, status = "cancelled", updatedAt = now)
+        }
+        _paymentRequests.value = paymentRequestDao.getAll().map { it.toPaymentRequest() }
+    }
+
+    /** Retry delivering any outgoing payment requests that never reached the masternode. */
+    private fun retryUndeliveredPaymentRequests() {
+        val client = masternodeClient ?: return
+        scope.launch {
+            val undelivered = paymentRequestDao.getUndeliveredOutgoing()
+            for (entity in undelivered) {
+                val ok = client.sendPaymentRequest(
+                    requestId = entity.id,
+                    requesterAddress = entity.requesterAddress,
+                    payerAddress = entity.payerAddress,
+                    amountSats = entity.amountSats,
+                    memo = entity.memo,
+                    requesterName = entity.requesterName,
+                )
+                if (ok) paymentRequestDao.markDelivered(entity.id)
+            }
+        }
+    }
+
+    /** Cancel an outgoing payment request. The payer is notified via WS. */
+    fun cancelPaymentRequest(requestId: String) {
+        scope.launch {
+            val client = masternodeClient
+            val entity = paymentRequestDao.getById(requestId) ?: return@launch
+            paymentRequestDao.updateStatus(
+                id = requestId,
+                status = "cancelled",
+                updatedAt = System.currentTimeMillis() / 1000,
+            )
+            _paymentRequests.value = paymentRequestDao.getAll().map { it.toPaymentRequest() }
+            if (client != null) {
+                client.cancelPaymentRequest(requestId, entity.requesterAddress)
+            }
+        }
+    }
+
+    /** Show an incoming payment request on the review screen. */
+    fun reviewPaymentRequest(request: PaymentRequest) {
+        _selectedPaymentRequest.value = request
+        _incomingPaymentRequest.value = null
+        _screen.value = Screen.PaymentRequestReview
+        // Notify the requester that this request has been opened
+        scope.launch {
+            val w = wallet ?: return@launch
+            val client = masternodeClient ?: return@launch
+            client.markPaymentRequestViewed(request.id, w.primaryAddress)
+        }
+    }
+
+    /** Dismiss the incoming request notification without reviewing. */
+    fun dismissIncomingRequest() {
+        _incomingPaymentRequest.value = null
+    }
+
+    /**
+     * Accept an incoming payment request: validate funds, send the transaction,
+     * notify the requester, and update local state.
+     */
+    fun acceptPaymentRequest(requestId: String) {
+        scope.launch {
+            _loading.value = true
+            try {
+                val w = wallet ?: throw Exception("Wallet not loaded")
+                val client = masternodeClient ?: throw Exception("Not connected")
+                val entity = paymentRequestDao.getById(requestId)
+                    ?: throw Exception("Payment request not found")
+
+                val fee = FeeSchedule().calculateFee(entity.amountSats)
+                val total = entity.amountSats + fee
+                val balance = _balance.value
+                if (balance.confirmed < total) {
+                    throw Exception("Insufficient funds: need ${total / 100_000_000.0} TIME, have ${balance.confirmed / 100_000_000.0} TIME")
+                }
+
+                // Build and broadcast the transaction
+                val tx = w.createTransaction(entity.requesterAddress, entity.amountSats)
+                val txid = client.broadcastTransaction(tx.txid())
+
+                // Update local state
+                paymentRequestDao.markPaid(
+                    id = requestId,
+                    txid = txid,
+                    updatedAt = System.currentTimeMillis() / 1000,
+                )
+                _paymentRequests.value = paymentRequestDao.getAll().map { it.toPaymentRequest() }
+                _selectedPaymentRequest.value = _selectedPaymentRequest.value?.copy(
+                    status = PaymentRequestStatus.Paid, paidTxid = txid
+                )
+
+                // Notify requester
+                client.respondToPaymentRequest(
+                    requestId = requestId,
+                    payerAddress = entity.payerAddress,
+                    accepted = true,
+                )
+
+                _success.value = "Payment sent! TxID: ${txid.take(16)}…"
+                w.save(walletDir, currentPassword)
+                refreshBalance()
+                refreshTransactions()
+                refreshUtxos()
+                _screen.value = Screen.Overview
+            } catch (e: Exception) {
+                _error.value = "Failed to accept request: ${e.message}"
+            } finally {
+                _loading.value = false
+            }
+        }
+    }
+
+    /** Decline an incoming payment request and notify the requester. */
+    fun declinePaymentRequest(requestId: String) {
+        scope.launch {
+            val client = masternodeClient
+            val entity = paymentRequestDao.getById(requestId) ?: return@launch
+            paymentRequestDao.updateStatus(
+                id = requestId,
+                status = "declined",
+                updatedAt = System.currentTimeMillis() / 1000,
+            )
+            _paymentRequests.value = paymentRequestDao.getAll().map { it.toPaymentRequest() }
+            _selectedPaymentRequest.value = null
+            if (client != null) {
+                client.respondToPaymentRequest(
+                    requestId = requestId,
+                    payerAddress = entity.payerAddress,
+                    accepted = false,
+                )
+            }
+            _screen.value = Screen.Overview
+        }
+    }
+
     private val _shouldExit = MutableStateFlow(false)
     val shouldExit: StateFlow<Boolean> = _shouldExit
+
+    fun clearShouldExit() { _shouldExit.value = false }
 
     /**
      * Logout: flush any pending wallet save, disconnect, clear state, then
@@ -1163,6 +1459,15 @@ class WalletService @Inject constructor(
             // Signal Activity to finish
             _shouldExit.value = true
         }
+    }
+
+    /**
+     * Enroll biometrics using the currently loaded PIN. Calls [BiometricHelper.enroll]
+     * on the activity so the fingerprint prompt is shown immediately.
+     */
+    fun enrollBiometric(activity: androidx.fragment.app.FragmentActivity, onResult: (Boolean) -> Unit) {
+        val pin = currentPassword ?: run { onResult(false); return }
+        BiometricHelper.enroll(activity, pin, onResult)
     }
 
     /** Lock the wallet: disconnect, clear sensitive state, return to PIN screen. */
@@ -1522,4 +1827,8 @@ enum class Screen {
     Connections,
     Settings,
     ChangePin,
+    PaymentRequest,
+    PaymentRequestQrScanner,
+    PaymentRequestReview,
+    PaymentRequests,
 }

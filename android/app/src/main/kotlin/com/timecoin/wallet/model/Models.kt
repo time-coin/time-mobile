@@ -136,3 +136,28 @@ data class FeeTier(
     val upTo: Long,
     val rateBps: Long,
 )
+
+enum class PaymentRequestStatus {
+    Pending,   // sent, awaiting payer response
+    Accepted,  // payer accepted (payment may not yet be confirmed)
+    Declined,  // payer declined
+    Cancelled, // requester cancelled before payer responded
+    Paid,      // transaction confirmed on-chain
+}
+
+data class PaymentRequest(
+    val id: String,
+    val requesterAddress: String,  // address that should receive funds
+    val payerAddress: String,      // address being asked to pay
+    val amountSats: Long,
+    val memo: String = "",
+    val requesterName: String = "",
+    val status: PaymentRequestStatus = PaymentRequestStatus.Pending,
+    val isOutgoing: Boolean,       // true = we sent it; false = we received it
+    val createdAt: Long = System.currentTimeMillis() / 1000,
+    val updatedAt: Long = System.currentTimeMillis() / 1000,
+    val paidTxid: String = "",
+    val delivered: Boolean = false,
+    val viewed: Boolean = false,
+    val expiresAt: Long = 0L,
+)

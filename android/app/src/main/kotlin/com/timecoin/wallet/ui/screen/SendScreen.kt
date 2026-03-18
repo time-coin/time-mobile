@@ -11,6 +11,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -19,8 +20,10 @@ import androidx.compose.ui.unit.sp
 import com.timecoin.wallet.crypto.Address
 import com.timecoin.wallet.crypto.NetworkType
 import com.timecoin.wallet.db.ContactEntity
+import com.timecoin.wallet.model.PaymentRequestStatus
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
+import com.timecoin.wallet.ui.component.AppHamburgerMenu
 import com.timecoin.wallet.ui.component.formatSatoshis
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -33,6 +36,10 @@ fun SendScreen(
     val isTestnet by service.isTestnet.collectAsState()
     val loading by service.loading.collectAsState()
     val contacts by service.contacts.collectAsState()
+    val paymentRequests by service.paymentRequests.collectAsState()
+    val pendingIncoming = remember(paymentRequests) {
+        paymentRequests.filter { !it.isOutgoing && it.status == PaymentRequestStatus.Pending }
+    }
 
     // Which view is shown: contact list or send form
     var showSendForm by remember { mutableStateOf(false) }
@@ -133,6 +140,7 @@ fun SendScreen(
                             Icon(Icons.Default.Send, contentDescription = "New Send")
                         }
                     }
+                    AppHamburgerMenu(service)
                 },
             )
         },
@@ -179,6 +187,50 @@ fun SendScreen(
                     .padding(padding)
                     .padding(horizontal = 16.dp),
             ) {
+                // ── Incoming payment request banner ──
+                if (pendingIncoming.isNotEmpty()) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        ),
+                        onClick = { service.navigateTo(Screen.PaymentRequests) },
+                    ) {
+                        Row(
+                            Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Badge { Text("${pendingIncoming.size}") }
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    text = if (pendingIncoming.size == 1)
+                                        "Payment request from ${pendingIncoming[0].requesterName.ifBlank {
+                                            pendingIncoming[0].requesterAddress.take(10) + "…"
+                                        }}"
+                                    else
+                                        "${pendingIncoming.size} payment requests awaiting your response",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                )
+                                Text(
+                                    text = "Tap to review",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                                )
+                            }
+                            Icon(
+                                Icons.Default.ChevronRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                }
+
                 // Search bar
                 TextField(
                     value = searchQuery,
@@ -217,6 +269,7 @@ fun SendScreen(
                                 singleLine = true,
                             )
                             Spacer(Modifier.height(8.dp))
+                            val clipboardManager = LocalClipboardManager.current
                             OutlinedTextField(
                                 value = newContactAddress,
                                 onValueChange = {
@@ -230,6 +283,16 @@ fun SendScreen(
                                 isError = newContactAddressError != null,
                                 supportingText = newContactAddressError?.let { err ->
                                     { Text(err, color = MaterialTheme.colorScheme.error) }
+                                },
+                                trailingIcon = {
+                                    IconButton(onClick = {
+                                        clipboardManager.getText()?.text?.trim()?.let {
+                                            newContactAddress = it
+                                            newContactAddressError = if (it.isBlank()) null else validateAddress(it)
+                                        }
+                                    }) {
+                                        Icon(Icons.Default.ContentPaste, contentDescription = "Paste address")
+                                    }
                                 },
                             )
                             Spacer(Modifier.height(8.dp))
@@ -422,6 +485,7 @@ private fun SendFormContent(
     onScanQr: () -> Unit,
     onSend: () -> Unit,
 ) {
+    val clipboardManager = LocalClipboardManager.current
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -451,23 +515,36 @@ private fun SendFormContent(
             isError = addressError != null,
             supportingText = addressError?.let { { Text(it) } },
             trailingIcon = {
-                IconButton(onClick = onScanQr) {
-                    Icon(Icons.Default.QrCodeScanner, contentDescription = "Scan QR")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = {
+                        clipboardManager.getText()?.text?.trim()?.let { onToAddressChange(it) }
+                    }) {
+                        Icon(Icons.Default.ContentPaste, contentDescription = "Paste address")
+                    }
+                    IconButton(onClick = onScanQr) {
+                        Icon(Icons.Default.QrCodeScanner, contentDescription = "Scan QR")
+                    }
                 }
             },
         )
         Spacer(Modifier.height(8.dp))
 
         // Amount
+        val amountBelowMin = amountSats in 1 until 100_000_000L
         OutlinedTextField(
             value = amountStr,
             onValueChange = onAmountChange,
             label = { Text("Amount (TIME)") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
+            isError = amountBelowMin,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
             supportingText = {
-                Text("Available: ${formatSatoshis(balance)} TIME")
+                if (amountBelowMin) {
+                    Text("Minimum send is 1 TIME", color = MaterialTheme.colorScheme.error)
+                } else {
+                    Text("Available: ${formatSatoshis(balance)} TIME")
+                }
             },
         )
         Spacer(Modifier.height(4.dp))
@@ -573,9 +650,10 @@ private fun SendFormContent(
 
         Spacer(Modifier.weight(1f))
 
+        val minSendSats = 100_000_000L // 1 TIME
         val canSend = toAddress.isNotEmpty() &&
             addressError == null &&
-            amountSats > 0 &&
+            amountSats >= minSendSats &&
             amountSats <= balance &&
             !loading
 

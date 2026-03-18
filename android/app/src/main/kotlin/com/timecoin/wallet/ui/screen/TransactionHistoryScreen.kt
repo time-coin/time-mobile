@@ -19,6 +19,7 @@ import com.timecoin.wallet.model.TransactionRecord
 import com.timecoin.wallet.model.TransactionStatus
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
+import com.timecoin.wallet.ui.component.AppHamburgerMenu
 import com.timecoin.wallet.ui.component.formatTime
 import com.timecoin.wallet.ui.component.formatSatoshis
 
@@ -66,6 +67,7 @@ fun TransactionHistoryScreen(service: WalletService) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                     }
                 },
+                actions = { AppHamburgerMenu(service) },
             )
         },
     ) { padding ->

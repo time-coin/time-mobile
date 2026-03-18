@@ -26,6 +26,7 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
+import com.timecoin.wallet.ui.component.AppHamburgerMenu
 import com.timecoin.wallet.ui.component.formatSatoshis
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -68,6 +69,7 @@ fun ReceiveScreen(service: WalletService) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                     }
                 },
+                actions = { AppHamburgerMenu(service) },
             )
         },
     ) { padding ->

@@ -175,6 +175,36 @@ class WsNotificationClient(
                                 ))
                             }
                         }
+                        "payment_request" -> {
+                            if (data != null) {
+                                val req = IncomingPaymentRequest(
+                                    id = data["id"]?.jsonPrimitive?.contentOrNull ?: return,
+                                    requesterAddress = data["requester_address"]?.jsonPrimitive?.contentOrNull ?: "",
+                                    payerAddress = data["payer_address"]?.jsonPrimitive?.contentOrNull ?: "",
+                                    amountSats = MasternodeClient.jsonToSatoshis(data["amount"]),
+                                    memo = data["memo"]?.jsonPrimitive?.contentOrNull ?: "",
+                                    requesterName = data["requester_name"]?.jsonPrimitive?.contentOrNull ?: "",
+                                    timestamp = data["timestamp"]?.jsonPrimitive?.longOrNull
+                                        ?: System.currentTimeMillis() / 1000,
+                                )
+                                _events.tryEmit(WsEvent.PaymentRequestReceived(req))
+                            }
+                        }
+                        "payment_request_cancelled" -> {
+                            val requestId = data?.get("id")?.jsonPrimitive?.contentOrNull ?: return
+                            _events.tryEmit(WsEvent.PaymentRequestCancelled(requestId))
+                        }
+                        "payment_request_response" -> {
+                            if (data != null) {
+                                val requestId = data["id"]?.jsonPrimitive?.contentOrNull ?: return
+                                val accepted = data["accepted"]?.jsonPrimitive?.booleanOrNull ?: false
+                                _events.tryEmit(WsEvent.PaymentRequestResponse(requestId, accepted))
+                            }
+                        }
+                        "payment_request_viewed" -> {
+                            val requestId = data?.get("id")?.jsonPrimitive?.contentOrNull ?: return
+                            _events.tryEmit(WsEvent.PaymentRequestViewed(requestId))
+                        }
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "Error parsing WS message: ${e.message}")
@@ -210,6 +240,10 @@ sealed class WsEvent {
     data class TransactionReceived(val notification: TxNotification) : WsEvent()
     data class UtxoFinalized(val txid: String, val outputIndex: Int) : WsEvent()
     data class TransactionRejected(val txid: String, val reason: String) : WsEvent()
+    data class PaymentRequestReceived(val request: IncomingPaymentRequest) : WsEvent()
+    data class PaymentRequestCancelled(val requestId: String) : WsEvent()
+    data class PaymentRequestResponse(val requestId: String, val accepted: Boolean) : WsEvent()
+    data class PaymentRequestViewed(val requestId: String) : WsEvent()
 }
 
 data class TxNotification(
@@ -217,5 +251,15 @@ data class TxNotification(
     val address: String,
     val amount: Long,
     val outputIndex: Int,
+    val timestamp: Long,
+)
+
+data class IncomingPaymentRequest(
+    val id: String,
+    val requesterAddress: String,
+    val payerAddress: String,
+    val amountSats: Long,
+    val memo: String,
+    val requesterName: String,
     val timestamp: Long,
 )

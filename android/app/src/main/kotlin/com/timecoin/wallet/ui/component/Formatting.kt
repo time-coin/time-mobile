@@ -24,8 +24,8 @@ fun formatSatoshis(satoshis: Long, decimalPlaces: Int = 8): String {
         val frac = satoshis % 100_000_000
         val fracStr = "%08d".format(frac)
         val trimmed = fracStr.trimEnd('0').ifEmpty { "0" }
-        val wholeStr = whole.toString().reversed().chunked(3).joinToString(",").reversed()
-        return "$wholeStr.$trimmed"
+        val wholeStr = whole.toString().reversed().chunked(3).joinToString(" ").reversed()
+        return "$wholeStr.${trimmed.chunked(3).joinToString(" ")}"
     }
 
     // Round to the specified decimal places using integer arithmetic
@@ -34,8 +34,8 @@ fun formatSatoshis(satoshis: Long, decimalPlaces: Int = 8): String {
     val whole = rounded / 100_000_000
     val frac = rounded % 100_000_000
     val fracStr = "%08d".format(frac).take(decimalPlaces)
-    val wholeStr = whole.toString().reversed().chunked(3).joinToString(",").reversed()
-    return "$wholeStr.$fracStr"
+    val wholeStr = whole.toString().reversed().chunked(3).joinToString(" ").reversed()
+    return "$wholeStr.${fracStr.chunked(3).joinToString(" ")}"
 }
 
 private val POW10 = longArrayOf(
