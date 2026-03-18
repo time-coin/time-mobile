@@ -380,22 +380,22 @@ class WalletService @Inject constructor(
             _connectedPeer.value = url
             Log.d(TAG, "Connected to $url, block=${h.blockHeight}")
 
-            // Kick off initial data fetch immediately — these launch their
-            // own coroutines so they run in parallel and return at once.
+            // Kick off a quick balance fetch for immediate display while
+            // discovery runs. Tx/UTXO sync is intentionally deferred until
+            // after discovery so the "Verified" badge only appears once we
+            // know the full address set and have complete data.
             refreshBalance()
-            refreshTransactions()
-            refreshUtxos()
 
             // Start WebSocket right away so we don't miss real-time events
             // during the address trim / discovery phase.
             startWebSocket()
             startPolling()
 
-            // Trim and discover run in the background — they must not block
-            // the initial display since they can take many RPC round-trips.
+            // Trim and discover run sequentially, then do the full sync that
+            // flips the status to "Verified" once everything is confirmed.
             scope.launch {
                 trimEmptyAddresses(client)
-                discoverAddresses()
+                discoverAddresses() // calls refreshTransactionsSync/refreshUtxosSync with markSynced=true at end
             }
 
             startBackgroundSync()
@@ -596,7 +596,7 @@ class WalletService @Inject constructor(
         }
     }
 
-    private suspend fun refreshTransactionsSync() {
+    private suspend fun refreshTransactionsSync(markSynced: Boolean = true) {
         val w = wallet ?: run { Log.w(TAG, "refreshTransactions: wallet is null"); return }
         val client = masternodeClient ?: run { Log.w(TAG, "refreshTransactions: client is null"); return }
         val rawTxs = client.getTransactionsMulti(w.getAddresses(), fetchedTxLimit)
@@ -606,7 +606,7 @@ class WalletService @Inject constructor(
 
         val processed = expandAndProcess(rawTxs, w, client)
         _transactions.value = processed
-        _transactionsSynced.value = true
+        if (markSynced) _transactionsSynced.value = true
         cacheTransactionsToDb(processed)
     }
 
@@ -982,7 +982,7 @@ class WalletService @Inject constructor(
         }
     }
 
-    private suspend fun refreshUtxosSync() {
+    private suspend fun refreshUtxosSync(markSynced: Boolean = true) {
         val w = wallet ?: run { Log.w(TAG, "refreshUtxos: wallet is null"); return }
         val client = masternodeClient ?: run { Log.w(TAG, "refreshUtxos: client is null"); return }
         val utxos = client.getUtxos(w.getAddresses())
@@ -990,7 +990,7 @@ class WalletService @Inject constructor(
         Log.d(TAG, "refreshUtxos: ${utxos.size} utxos, spendable=${utxos.count { it.spendable }}, sum=$utxoSum")
         w.setUtxos(utxos)
         _utxos.value = utxos
-        _utxoSynced.value = true
+        if (markSynced) _utxoSynced.value = true
     }
 
     fun sendTransaction(toAddress: String, amount: Long) {
