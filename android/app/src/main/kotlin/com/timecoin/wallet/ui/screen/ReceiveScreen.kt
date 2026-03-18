@@ -20,10 +20,14 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
+import kotlinx.coroutines.delay
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
 import com.timecoin.wallet.ui.component.AppHamburgerMenu
@@ -42,6 +46,7 @@ fun ReceiveScreen(service: WalletService) {
     // Editable label state
     var editingIndex by remember { mutableStateOf(-1) }
     var editLabelText by remember { mutableStateOf("") }
+    var originalLabelText by remember { mutableStateOf("") }
 
     val currentAddress = addresses.getOrNull(selectedIndex) ?: ""
 
@@ -198,25 +203,35 @@ fun ReceiveScreen(service: WalletService) {
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     if (editingIndex == index) {
+                                        // Auto-save 300 ms after the user stops typing
+                                        LaunchedEffect(editLabelText) {
+                                            delay(300)
+                                            service.updateAddressLabel(address, editLabelText)
+                                        }
                                         OutlinedTextField(
                                             value = editLabelText,
                                             onValueChange = { editLabelText = it },
                                             singleLine = true,
                                             modifier = Modifier.fillMaxWidth(),
                                             textStyle = MaterialTheme.typography.labelMedium,
+                                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                            keyboardActions = KeyboardActions(onDone = { editingIndex = -1 }),
                                             trailingIcon = {
                                                 Row {
-                                                    IconButton(
-                                                        onClick = {
-                                                            service.updateAddressLabel(address, editLabelText)
-                                                            editingIndex = -1
-                                                        },
-                                                        modifier = Modifier.size(32.dp),
-                                                    ) {
-                                                        Icon(Icons.Default.Check, contentDescription = "Save", modifier = Modifier.size(18.dp))
-                                                    }
+                                                    // ✓ – close (already saved by LaunchedEffect)
                                                     IconButton(
                                                         onClick = { editingIndex = -1 },
+                                                        modifier = Modifier.size(32.dp),
+                                                    ) {
+                                                        Icon(Icons.Default.Check, contentDescription = "Done", modifier = Modifier.size(18.dp))
+                                                    }
+                                                    // ✗ – revert to the label value before editing began
+                                                    IconButton(
+                                                        onClick = {
+                                                            service.updateAddressLabel(address, originalLabelText)
+                                                            editLabelText = originalLabelText
+                                                            editingIndex = -1
+                                                        },
                                                         modifier = Modifier.size(32.dp),
                                                     ) {
                                                         Icon(Icons.Default.Close, contentDescription = "Cancel", modifier = Modifier.size(18.dp))
@@ -253,7 +268,9 @@ fun ReceiveScreen(service: WalletService) {
                                     Spacer(Modifier.width(4.dp))
                                     IconButton(
                                         onClick = {
-                                            editLabelText = labelMap[address] ?: ""
+                                            val current = labelMap[address] ?: ""
+                                            originalLabelText = current
+                                            editLabelText = current
                                             editingIndex = index
                                         },
                                         modifier = Modifier.size(32.dp),
