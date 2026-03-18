@@ -335,9 +335,11 @@ class MasternodeClient(
             val blockHeight = obj["blockheight"]?.jsonPrimitive?.longOrNull ?: 0
             val confirmations = obj["confirmations"]?.jsonPrimitive?.longOrNull ?: 0
             val txStatus = if (inBlock || finalized) TransactionStatus.Approved else TransactionStatus.Pending
+            val rpcMemo = obj["memo"]?.jsonPrimitive?.contentOrNull ?: ""
 
             val isSend = category == "send"
             val isConsolidate = category == "consolidate"
+            val isBlockReward = category == "generate"
 
             Log.d("MasternodeClient", "parseTx: txid=${txid.take(12)}.. cat=$category " +
                 "rawAmt=$rawAmount fee=$fee addr=${address.take(16)}.. vout=$vout")
@@ -371,9 +373,10 @@ class MasternodeClient(
                 rawAmount
             }
 
-            // Skip zero-amount received/generate entries — these are staking
-            // inputs with no corresponding payout in that transaction.
-            if (displayAmount == 0L && !isSend) return@mapNotNull null
+            // Skip zero-amount received entries — these are staking inputs with
+            // no corresponding payout. Block rewards (generate) are kept even
+            // at zero so they appear in history.
+            if (displayAmount == 0L && !isSend && !isBlockReward) return@mapNotNull null
 
             TransactionRecord(
                 txid = txid,
@@ -387,6 +390,7 @@ class MasternodeClient(
                 blockHash = blockHash,
                 blockHeight = blockHeight,
                 confirmations = confirmations,
+                memo = if (isBlockReward) "Block Reward" else rpcMemo,
             )
         }
     }
