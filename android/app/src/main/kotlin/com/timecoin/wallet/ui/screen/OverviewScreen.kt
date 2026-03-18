@@ -365,32 +365,27 @@ fun TransactionRow(
         )
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
+            // Line 1: label or generic direction name
             Text(
                 text = when {
                     tx.isFee -> "Network Fee"
                     tx.isSend -> label ?: "Sent"
-                    else -> label ?: tx.address.take(12) + "...${tx.address.takeLast(4)}"
+                    else -> label ?: "Received"
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
             )
+            // Line 2: address + memo inline
+            val addrText = if (tx.isFee) tx.txid.take(12) + "…" + tx.txid.takeLast(4)
+                           else tx.address.take(12) + "…" + tx.address.takeLast(4)
+            val subtitleText = if (tx.memo.isNotBlank()) "$addrText · ${tx.memo}" else addrText
             Text(
-                text = if (tx.isFee) tx.txid.take(12) + "..." + tx.txid.takeLast(4)
-                       else tx.address.take(12) + "..." + tx.address.takeLast(4),
+                text = subtitleText,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (tx.memo.isNotBlank()) {
-                Text(
-                    text = tx.memo,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
         }
         Column(horizontalAlignment = Alignment.End) {
             Text(

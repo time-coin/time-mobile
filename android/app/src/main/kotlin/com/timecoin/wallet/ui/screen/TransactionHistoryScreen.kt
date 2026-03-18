@@ -176,9 +176,11 @@ fun TransactionDetailRow(
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                 )
+                val addrText = if (tx.isFee) tx.txid.take(12) + "…" + tx.txid.takeLast(4)
+                               else tx.address.take(14) + "…" + tx.address.takeLast(6)
+                val subtitleText = if (tx.memo.isNotBlank()) "$addrText · ${tx.memo}" else addrText
                 Text(
-                    text = if (tx.isFee) tx.txid.take(12) + "..." + tx.txid.takeLast(4)
-                           else tx.address,
+                    text = subtitleText,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
