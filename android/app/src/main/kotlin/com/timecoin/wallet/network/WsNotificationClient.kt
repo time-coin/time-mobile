@@ -181,7 +181,8 @@ class WsNotificationClient(
                                     id = data["id"]?.jsonPrimitive?.contentOrNull ?: return,
                                     requesterAddress = data["requester_address"]?.jsonPrimitive?.contentOrNull ?: "",
                                     payerAddress = data["payer_address"]?.jsonPrimitive?.contentOrNull ?: "",
-                                    amountSats = MasternodeClient.jsonToSatoshis(data["amount"]),
+                                    amountSats = data["amount"]?.jsonPrimitive?.longOrNull
+                                        ?: MasternodeClient.jsonToSatoshis(data["amount"]),
                                     memo = data["memo"]?.jsonPrimitive?.contentOrNull ?: "",
                                     requesterName = data["requester_name"]?.jsonPrimitive?.contentOrNull ?: "",
                                     timestamp = data["timestamp"]?.jsonPrimitive?.longOrNull

@@ -3,6 +3,7 @@ package com.timecoin.wallet.model
 import com.timecoin.wallet.crypto.Address
 import com.timecoin.wallet.crypto.Keypair
 import com.timecoin.wallet.crypto.toHexString
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.security.MessageDigest
@@ -34,8 +35,8 @@ data class OutPoint(
 /** Transaction input */
 @Serializable
 data class TxInput(
-    val previousOutput: OutPoint,
-    var scriptSig: ByteArray = ByteArray(0),
+    @SerialName("previous_output") val previousOutput: OutPoint,
+    @SerialName("script_sig") var scriptSig: ByteArray = ByteArray(0),
     val sequence: Long = 0xFFFFFFFFL,
 ) {
     companion object {
@@ -64,7 +65,7 @@ data class TxInput(
 @Serializable
 data class TxOutput(
     val value: Long,
-    val scriptPubkey: ByteArray,
+    @SerialName("script_pubkey") val scriptPubkey: ByteArray,
 ) {
     companion object {
         fun new(amount: Long, address: Address) = TxOutput(
@@ -95,7 +96,7 @@ data class Transaction(
     val version: Int = 1,
     val inputs: MutableList<TxInput> = mutableListOf(),
     val outputs: MutableList<TxOutput> = mutableListOf(),
-    val lockTime: Int = 0,
+    @SerialName("lock_time") val lockTime: Int = 0,
     val timestamp: Long = System.currentTimeMillis() / 1000,
 ) {
     fun addInput(input: TxInput) { inputs.add(input) }

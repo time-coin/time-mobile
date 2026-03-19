@@ -31,6 +31,7 @@ import com.timecoin.wallet.ui.component.formatTime
 fun PaymentRequestScreen(service: WalletService) {
     val isTestnet by service.isTestnet.collectAsState()
     val addresses by service.addresses.collectAsState()
+    val contacts by service.contacts.collectAsState()
     val scannedAddress by service.scannedAddress.collectAsState()
     val loading by service.loading.collectAsState()
 
@@ -40,6 +41,17 @@ fun PaymentRequestScreen(service: WalletService) {
     var requesterName by remember { mutableStateOf("") }
     var showOptional by remember { mutableStateOf(false) }
     var addressError by remember { mutableStateOf<String?>(null) }
+    var fromAddressIdx by remember { mutableStateOf(0) }
+    var fromDropdownExpanded by remember { mutableStateOf(false) }
+
+    // Pair each own address with its label from contacts
+    val ownAddressOptions = remember(addresses, contacts) {
+        val contactMap = contacts.associate { it.address to it.label }
+        addresses.mapIndexed { idx, addr ->
+            val label = contactMap[addr]?.takeIf { it.isNotBlank() } ?: "Address ${idx + 1}"
+            Triple(idx, addr, label)
+        }
+    }
 
     val network = if (isTestnet) NetworkType.Testnet else NetworkType.Mainnet
     val ownAddresses = remember(addresses) { addresses.toSet() }
@@ -76,6 +88,39 @@ fun PaymentRequestScreen(service: WalletService) {
                 .verticalScroll(rememberScrollState()),
         ) {
             Spacer(Modifier.height(8.dp))
+
+            // "Receive To" address selector
+            if (ownAddressOptions.size > 1) {
+                val selectedOption = ownAddressOptions.getOrNull(fromAddressIdx) ?: ownAddressOptions.first()
+                ExposedDropdownMenuBox(
+                    expanded = fromDropdownExpanded,
+                    onExpandedChange = { fromDropdownExpanded = it },
+                ) {
+                    OutlinedTextField(
+                        value = selectedOption.third,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Receive To") },
+                        modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = fromDropdownExpanded) },
+                    )
+                    ExposedDropdownMenu(
+                        expanded = fromDropdownExpanded,
+                        onDismissRequest = { fromDropdownExpanded = false },
+                    ) {
+                        ownAddressOptions.forEach { (idx, _, label) ->
+                            DropdownMenuItem(
+                                text = { Text(label) },
+                                onClick = {
+                                    fromAddressIdx = idx
+                                    fromDropdownExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
 
             // Payer address
             OutlinedTextField(
@@ -166,6 +211,7 @@ fun PaymentRequestScreen(service: WalletService) {
                         amountSats = amountSats,
                         memo = memo.trim(),
                         requesterName = requesterName.trim(),
+                        fromAddressIdx = fromAddressIdx,
                     )
                     // Clear form on send
                     payerAddress = ""; amountStr = ""; memo = ""; requesterName = ""

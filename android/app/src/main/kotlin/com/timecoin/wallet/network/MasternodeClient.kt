@@ -125,8 +125,9 @@ class MasternodeClient(
     }
 
     /** Broadcast a signed transaction (hex-encoded). */
-    suspend fun broadcastTransaction(txHex: String): String {
-        val result = rpcCall("sendrawtransaction", buildJsonArray { add(txHex) })
+    suspend fun broadcastTransaction(tx: Transaction): String {
+        val txJson = kotlinx.serialization.json.Json.encodeToJsonElement(Transaction.serializer(), tx)
+        val result = rpcCall("sendrawtransaction", buildJsonArray { add(txJson) })
         return result.jsonPrimitive.contentOrNull ?: result.toString().trim('"')
     }
 
@@ -217,6 +218,9 @@ class MasternodeClient(
         amountSats: Long,
         memo: String,
         requesterName: String,
+        pubkeyHex: String = "",
+        signatureHex: String = "",
+        timestamp: Long = System.currentTimeMillis() / 1000,
     ): Boolean = try {
         rpcCall("sendpaymentrequest", buildJsonArray {
             add(buildJsonObject {
@@ -226,6 +230,9 @@ class MasternodeClient(
                 put("amount", amountSats)
                 put("memo", memo)
                 put("requester_name", requesterName)
+                put("pubkey_hex", pubkeyHex)
+                put("signature_hex", signatureHex)
+                put("timestamp", timestamp)
             })
         })
         true

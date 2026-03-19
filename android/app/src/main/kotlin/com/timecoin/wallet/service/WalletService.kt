@@ -68,6 +68,11 @@ class WalletService @Inject constructor(
     // Cache for successfully expanded consolidate transactions
     private val consolidateCache = mutableMapOf<String, List<TransactionRecord>>()
 
+    // Cache for real recipient addresses: the masternode reports the change
+    // address in send entries, so we resolve the true recipient via
+    // getTransactionDetail and cache the result to avoid repeat RPC calls.
+    private val sendRecipientCache = mutableMapOf<String, String>()
+
     // Progressive transaction loading state
     private var fetchedTxLimit = INITIAL_TX_LIMIT
     private val _hasMoreTransactions = MutableStateFlow(true)
@@ -164,7 +169,7 @@ class WalletService @Inject constructor(
     /** Max non-cancelled outgoing requests to the same address per hour. */
     private val RATE_LIMIT_MAX = 3
     private val RATE_LIMIT_WINDOW_SECS = 3600L
-    private val PAYMENT_REQUEST_EXPIRY_SECS = 7 * 24 * 3600L // 7 days
+    private val PAYMENT_REQUEST_EXPIRY_SECS = 86400L // 24 hours — matches masternode TTL
 
     private val _backups = MutableStateFlow<List<java.io.File>>(emptyList())
     val backups: StateFlow<List<java.io.File>> = _backups
@@ -757,7 +762,46 @@ class WalletService @Inject constructor(
         }
         expandedTxs.addAll(expandedEntries)
 
-        val allTxs = normalTxs + expandedTxs
+        // Correct recipient addresses for normal sends where the masternode
+        // reports the change address instead of the actual recipient.
+        // Resolved in parallel and cached to avoid repeat RPC calls.
+        val wrongAddrSendTxids = normalTxs
+            .filter { it.isSend && it.address in ownAddresses }
+            .map { it.txid }.toSet()
+
+        val addressCorrections: Map<String, String> = if (wrongAddrSendTxids.isEmpty()) {
+            emptyMap()
+        } else {
+            coroutineScope {
+                wrongAddrSendTxids.map { txid ->
+                    async {
+                        val cached = sendRecipientCache[txid]
+                        if (cached != null) return@async txid to cached
+                        try {
+                            val (_, outputs) = client.getTransactionDetail(txid)
+                            val realAddr = outputs.firstOrNull { it.address !in ownAddresses }?.address
+                            if (realAddr != null) {
+                                Log.d(TAG, "Resolved recipient for ${txid.take(12)}..: ${realAddr.take(16)}..")
+                                sendRecipientCache[txid] = realAddr
+                            }
+                            txid to realAddr
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Could not resolve recipient for ${txid.take(12)}..: ${e.message}")
+                            txid to null
+                        }
+                    }
+                }.awaitAll().mapNotNull { (txid, addr) ->
+                    if (addr != null) txid to addr else null
+                }.toMap()
+            }
+        }
+
+        val correctedNormalTxs = normalTxs.map { tx ->
+            val correction = addressCorrections[tx.txid]
+            if (tx.isSend && correction != null) tx.copy(address = correction) else tx
+        }
+
+        val allTxs = correctedNormalTxs + expandedTxs
         val processed = processTransactions(allTxs, ownAddresses)
         Log.d(TAG, "expandAndProcess: ${rawTxs.size} raw → ${processed.size} processed")
         return processed
@@ -821,38 +865,32 @@ class WalletService @Inject constructor(
 
         val sendTxids = sendsByTxid.keys
 
-        // For each send txid, find the "real" send output(s) by vout:
-        // outputs to addresses NOT in our wallet, or if ALL outputs
-        // are to our own addresses (send-to-self), the one with the
-        // smallest amount is the actual send and the rest are change.
-        // We track by vout (not address) because multiple outputs can
-        // share the same address.
+        // For each send txid, identify the real send output vouts so we can
+        // filter out change send entries. The masternode uses "consolidate"
+        // category for genuine self-sends; "send" category always implies at
+        // least one external output. When all send entry addresses are in
+        // ownAddresses it is because the masternode reports the change address
+        // (not the recipient) in the send entry — this is normal masternode
+        // behaviour, not a self-send. In both cases we keep the send entry and
+        // filter all receive entries to own addresses as change.
         val realSendVouts = mutableMapOf<String, MutableSet<Int>>() // txid → real send vouts
-        val selfSendTxids = mutableSetOf<String>()
         for ((txid, sends) in sendsByTxid) {
             val externalDests = sends.filter { it.address !in ownAddresses }
             if (externalDests.isNotEmpty()) {
-                // Normal send: external outputs are the real destinations
                 realSendVouts[txid] = externalDests.map { it.vout }.toMutableSet()
-                Log.d(TAG, "  NORMAL SEND txid=${txid.take(12)}.. → ${externalDests.size} external dests")
+                Log.d(TAG, "  SEND txid=${txid.take(12)}.. → ${externalDests.size} external dests")
             } else {
-                // Send-to-self: all outputs go to own addresses. Keep the
-                // smallest non-zero as the "real" send; the rest are change.
-                selfSendTxids.add(txid)
-                val sorted = sends.filter { it.amount > 0 }.sortedBy { it.amount }
-                if (sorted.isNotEmpty()) {
-                    realSendVouts[txid] = mutableSetOf(sorted.first().vout)
-                    Log.d(TAG, "  SELF-SEND txid=${txid.take(12)}.. picked smallest amount=${sorted.first().amount} " +
-                        "vout=${sorted.first().vout} addr=${sorted.first().address.take(16)}.. (${sends.size} total sends)")
-                    for (s in sorted) {
-                        Log.d(TAG, "    candidate: amount=${s.amount} addr=${s.address.take(16)}.. vout=${s.vout}")
-                    }
-                }
+                // Masternode reported change address in send entry — keep all
+                // send vouts so the send entry itself is not filtered out.
+                realSendVouts[txid] = sends.map { it.vout }.toMutableSet()
+                Log.d(TAG, "  SEND txid=${txid.take(12)}.. all dests are own (masternode change-addr reporting)")
             }
         }
 
-        // 3. Filter: remove change send entries and change receive entries
-        val keptSelfReceive = mutableSetOf<String>()
+        // 3. Filter: remove change send entries and change receive entries.
+        // The masternode uses "consolidate" for genuine self-sends; for all
+        // "send" category entries, receive entries to own addresses are always
+        // change and must be filtered regardless of vout.
         val filtered = deduped.filter { tx ->
             if (tx.isSend) {
                 // Filter out send entries for change outputs (own address
@@ -870,19 +908,12 @@ class WalletService @Inject constructor(
             // Keep receives for txids we didn't send
             if (tx.txid !in sendTxids) return@filter true
 
-            // Receive for a txid we sent — check if it's change or a real receive
+            // Receive for a txid we sent to an external address — keep it
             if (tx.address !in ownAddresses) return@filter true
 
-            // This is a receive to our own address for a txid we sent.
-            val realVouts = realSendVouts[tx.txid]
-            if (realVouts != null && tx.vout in realVouts && tx.txid !in keptSelfReceive) {
-                // Send-to-self: keep one receive matching a real send vout
-                keptSelfReceive.add(tx.txid)
-                Log.d(TAG, "Keeping self-receive: txid=${tx.txid.take(12)}.. amount=${tx.amount} vout=${tx.vout} addr=${tx.address.take(16)}..")
-                return@filter true
-            }
-
-            // Change output — filter it out
+            // Receive to our own address for a txid we sent: always change.
+            // True self-sends come in as "consolidate" category and are
+            // expanded by expandAndProcess before reaching here.
             Log.d(TAG, "Filtering change output: txid=${tx.txid.take(12)}.. amount=${tx.amount} vout=${tx.vout} addr=${tx.address.take(12)}..")
             false
         }
@@ -919,40 +950,7 @@ class WalletService @Inject constructor(
             }
         }
 
-        // 5. Synthesize missing receive entries for send-to-self transactions.
-        // If the destination is one of our own addresses and we don't already
-        // have a receive entry, add one so the history shows the full picture.
-        val synthReceives = mutableListOf<TransactionRecord>()
-        for ((txid, sends) in sendsByTxid) {
-            if (txid !in selfSendTxids) continue
-            val realVouts = realSendVouts[txid] ?: continue
-            for (send in sends) {
-                if (send.vout !in realVouts) continue
-                val hasReceive = filtered.any { it.txid == txid && !it.isSend && !it.isFee }
-                if (!hasReceive) {
-                    Log.d(TAG, "  SYNTH RECV: txid=${txid.take(12)}.. amount=${send.amount} vout=${send.vout} addr=${send.address.take(16)}..")
-                    synthReceives.add(
-                        TransactionRecord(
-                            txid = txid,
-                            vout = send.vout,
-                            isSend = false,
-                            address = send.address,
-                            amount = send.amount,
-                            fee = 0,
-                            timestamp = send.timestamp,
-                            status = send.status,
-                            blockHash = send.blockHash,
-                            blockHeight = send.blockHeight,
-                            confirmations = send.confirmations,
-                        )
-                    )
-                } else {
-                    Log.d(TAG, "  RECV exists for self-send txid=${txid.take(12)}.. (no synth needed)")
-                }
-            }
-        }
-
-        val result = filtered + feeEntries + synthReceives
+        val result = filtered + feeEntries
         Log.d(TAG, "processTransactions FINAL: ${result.size} entries")
         for (tx in result) {
             Log.d(TAG, "  FINAL: txid=${tx.txid.take(12)}.. " +
@@ -1001,9 +999,7 @@ class WalletService @Inject constructor(
                 val client = masternodeClient ?: throw Exception("Not connected")
 
                 val tx = w.createTransaction(toAddress, amount)
-                val txHex = tx.txid() // For now, send txid; real impl sends serialized bytes
-                // TODO: Implement proper bincode serialization for broadcast
-                val txid = client.broadcastTransaction(txHex)
+                val txid = client.broadcastTransaction(tx)
 
                 _success.value = "Transaction sent! TxID: ${txid.take(16)}..."
                 w.save(walletDir, null) // persist UTXO changes
@@ -1112,7 +1108,22 @@ class WalletService @Inject constructor(
         Log.d(TAG, "Starting address discovery from index $startIndex")
 
         val activeProbes = mutableListOf<Int>()
-        var windowStart = startIndex
+
+        // Pre-seed with any owned contacts that have a known derivation index.
+        // This preserves addresses the user manually generated (e.g. named
+        // "Savings") even if they have no blockchain activity yet — mirrors
+        // the same protection that trimEmptyAddresses applies during normal
+        // startup. Without this, reindex would drop those addresses.
+        val ownedContacts = contactDao.getOwnedAddresses()
+        for (c in ownedContacts) {
+            val idx = c.derivationIndex ?: continue
+            if (idx >= startIndex) {
+                Log.d(TAG, "Pre-seeding contact address[$idx]: ${c.address.take(16)}..")
+                activeProbes.add(idx)
+            }
+        }
+
+        var windowStart = if (activeProbes.isEmpty()) startIndex else activeProbes.max() + 1
 
         // Probe in windows of GAP_LIMIT addresses at a time using batched
         // multi-address calls (2 parallel RPCs instead of GAP_LIMIT×2 sequential).
@@ -1236,14 +1247,16 @@ class WalletService @Inject constructor(
 
     /**
      * Send a payment request to [payerAddress] asking them to send [amountSats] to
-     * our primary wallet address. Rate-limited to [RATE_LIMIT_MAX] active requests
-     * per target per hour; cancelled requests don't count toward the limit.
+     * the wallet address at [fromAddressIdx]. The request is signed with that address's
+     * Ed25519 keypair so the masternode can verify authenticity.
+     * Rate-limited to [RATE_LIMIT_MAX] active requests per target per hour.
      */
     fun sendPaymentRequest(
         payerAddress: String,
         amountSats: Long,
         memo: String = "",
         requesterName: String = "",
+        fromAddressIdx: Int = 0,
     ) {
         scope.launch {
             val w = wallet ?: run { _error.value = "Wallet not loaded"; return@launch }
@@ -1257,8 +1270,15 @@ class WalletService @Inject constructor(
             }
 
             val requestId = java.util.UUID.randomUUID().toString()
-            val requesterAddress = w.primaryAddress
+            val addrs = w.getAddresses()
+            val requesterAddress = addrs.getOrElse(fromAddressIdx) { w.primaryAddress }
             val now = System.currentTimeMillis() / 1000
+
+            // Sign: id || requester_address || payer_address || amount_le8 || memo || timestamp_le8
+            val keypair = w.deriveKeypair(fromAddressIdx)
+            val signData = buildSignData(requestId, requesterAddress, payerAddress, amountSats, memo, now)
+            val pubkeyHex = keypair.publicKeyBytes().toHexString()
+            val signatureHex = keypair.sign(signData).toHexString()
 
             val entity = PaymentRequestEntity(
                 id = requestId,
@@ -1275,7 +1295,6 @@ class WalletService @Inject constructor(
             )
             paymentRequestDao.upsert(entity)
             _paymentRequests.value = paymentRequestDao.getAll().map { it.toPaymentRequest() }
-            // Navigate to the list so the user sees their sent request immediately
             _screen.value = Screen.PaymentRequests
 
             val delivered = client.sendPaymentRequest(
@@ -1285,12 +1304,34 @@ class WalletService @Inject constructor(
                 amountSats = amountSats,
                 memo = memo,
                 requesterName = requesterName,
+                pubkeyHex = pubkeyHex,
+                signatureHex = signatureHex,
+                timestamp = now,
             )
             if (delivered) {
                 paymentRequestDao.markDelivered(requestId)
             }
             _success.value = "Payment request sent!"
         }
+    }
+
+    /** Build the canonical signing payload for a payment request. */
+    private fun buildSignData(
+        id: String,
+        requesterAddress: String,
+        payerAddress: String,
+        amountSats: Long,
+        memo: String,
+        timestamp: Long,
+    ): ByteArray {
+        val buf = java.io.ByteArrayOutputStream()
+        buf.write(id.toByteArray(Charsets.UTF_8))
+        buf.write(requesterAddress.toByteArray(Charsets.UTF_8))
+        buf.write(payerAddress.toByteArray(Charsets.UTF_8))
+        buf.write(java.nio.ByteBuffer.allocate(8).order(java.nio.ByteOrder.LITTLE_ENDIAN).putLong(amountSats).array())
+        buf.write(memo.toByteArray(Charsets.UTF_8))
+        buf.write(java.nio.ByteBuffer.allocate(8).order(java.nio.ByteOrder.LITTLE_ENDIAN).putLong(timestamp).array())
+        return buf.toByteArray()
     }
 
     /** Mark pending payment requests as expired when their expiry time has passed. */
@@ -1306,6 +1347,7 @@ class WalletService @Inject constructor(
 
     /** Retry delivering any outgoing payment requests that never reached the masternode. */
     private fun retryUndeliveredPaymentRequests() {
+        val w = wallet ?: return
         val client = masternodeClient ?: return
         scope.launch {
             val undelivered = paymentRequestDao.getUndeliveredOutgoing()
@@ -1313,6 +1355,14 @@ class WalletService @Inject constructor(
                 // Re-check status before sending — a concurrent cancel may have run since we read the list
                 val current = paymentRequestDao.getById(entity.id) ?: continue
                 if (current.status != "pending") continue
+
+                // Re-sign with the keypair for this requester address
+                val addrIdx = contactDao.getByAddress(entity.requesterAddress)?.derivationIndex ?: 0
+                val keypair = w.deriveKeypair(addrIdx)
+                val signData = buildSignData(
+                    entity.id, entity.requesterAddress, entity.payerAddress,
+                    entity.amountSats, entity.memo, entity.createdAt,
+                )
                 val ok = client.sendPaymentRequest(
                     requestId = entity.id,
                     requesterAddress = entity.requesterAddress,
@@ -1320,6 +1370,9 @@ class WalletService @Inject constructor(
                     amountSats = entity.amountSats,
                     memo = entity.memo,
                     requesterName = entity.requesterName,
+                    pubkeyHex = keypair.publicKeyBytes().toHexString(),
+                    signatureHex = keypair.sign(signData).toHexString(),
+                    timestamp = entity.createdAt,
                 )
                 if (ok) paymentRequestDao.markDelivered(entity.id)
             }
@@ -1330,12 +1383,11 @@ class WalletService @Inject constructor(
     fun cancelPaymentRequest(requestId: String) {
         scope.launch {
             val client = masternodeClient
-            val entity = paymentRequestDao.getById(requestId) ?: return@launch
-            // Notify masternode first (so payer gets the cancellation WS event)
-            if (client != null && entity.delivered) {
+            // Notify masternode first (so payer gets the cancellation WS event), but always delete regardless
+            val entity = paymentRequestDao.getById(requestId)
+            if (client != null && entity != null && entity.delivered) {
                 client.cancelPaymentRequest(requestId, entity.requesterAddress)
             }
-            // Delete the local record so it clears from the requester's view
             paymentRequestDao.deleteById(requestId)
             _paymentRequests.value = paymentRequestDao.getAll().map { it.toPaymentRequest() }
         }
@@ -1381,7 +1433,7 @@ class WalletService @Inject constructor(
 
                 // Build and broadcast the transaction
                 val tx = w.createTransaction(entity.requesterAddress, entity.amountSats)
-                val txid = client.broadcastTransaction(tx.txid())
+                val txid = client.broadcastTransaction(tx)
 
                 // Update local state
                 paymentRequestDao.markPaid(
@@ -1591,6 +1643,7 @@ class WalletService @Inject constructor(
                 // Clear DB caches
                 transactionDao.deleteAll()
                 consolidateCache.clear()
+                sendRecipientCache.clear()
                 fetchedTxLimit = INITIAL_TX_LIMIT
 
                 // Reset in-memory state
