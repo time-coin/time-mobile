@@ -223,7 +223,7 @@ class MasternodeClient(
                 put("id", requestId)
                 put("requester_address", requesterAddress)
                 put("payer_address", payerAddress)
-                put("amount", amountSats.toDouble() / 100_000_000.0)
+                put("amount", amountSats)
                 put("memo", memo)
                 put("requester_name", requesterName)
             })
