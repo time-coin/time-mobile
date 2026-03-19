@@ -1022,14 +1022,16 @@ class WalletService @Inject constructor(
     fun generateAddress(): String? {
         val w = wallet ?: return null
         val addr = w.generateAddress()
-        _addresses.value = w.getAddresses()
+        val allAddrs = w.getAddresses()
+        val newIndex = allAddrs.size - 1
+        _addresses.value = allAddrs
 
         scope.launch {
             contactDao.upsert(ContactEntity(
                 address = addr,
-                label = "Address ${w.getAddresses().size}",
+                label = "Address ${newIndex + 1}",
                 isOwned = true,
-                derivationIndex = w.getAddresses().size - 1,
+                derivationIndex = newIndex,
             ))
             _contacts.value = contactDao.getAll()
             // Persist updated nextAddressIndex
@@ -1070,6 +1072,13 @@ class WalletService @Inject constructor(
             }
         } catch (e: Exception) {
             Log.w(TAG, "trimEmptyAddresses: tx history check failed", e)
+        }
+
+        // Any address with a contact entry (user-generated or user-labeled) must not be
+        // trimmed — the user may have shared it or assigned a label before it received funds.
+        val contactedAddresses = contactDao.getAll().map { it.address }.toSet()
+        for ((idx, addr) in addrs.withIndex()) {
+            if (addr in contactedAddresses) activeIndices.add(idx)
         }
 
         val lastActive = if (activeIndices.isEmpty()) 0 else activeIndices.max()
@@ -1301,6 +1310,9 @@ class WalletService @Inject constructor(
         scope.launch {
             val undelivered = paymentRequestDao.getUndeliveredOutgoing()
             for (entity in undelivered) {
+                // Re-check status before sending — a concurrent cancel may have run since we read the list
+                val current = paymentRequestDao.getById(entity.id) ?: continue
+                if (current.status != "pending") continue
                 val ok = client.sendPaymentRequest(
                     requestId = entity.id,
                     requesterAddress = entity.requesterAddress,
@@ -1314,20 +1326,18 @@ class WalletService @Inject constructor(
         }
     }
 
-    /** Cancel an outgoing payment request. The payer is notified via WS. */
+    /** Cancel an outgoing payment request. The payer is notified via WS, then the local record is deleted. */
     fun cancelPaymentRequest(requestId: String) {
         scope.launch {
             val client = masternodeClient
             val entity = paymentRequestDao.getById(requestId) ?: return@launch
-            paymentRequestDao.updateStatus(
-                id = requestId,
-                status = "cancelled",
-                updatedAt = System.currentTimeMillis() / 1000,
-            )
-            _paymentRequests.value = paymentRequestDao.getAll().map { it.toPaymentRequest() }
-            if (client != null) {
+            // Notify masternode first (so payer gets the cancellation WS event)
+            if (client != null && entity.delivered) {
                 client.cancelPaymentRequest(requestId, entity.requesterAddress)
             }
+            // Delete the local record so it clears from the requester's view
+            paymentRequestDao.deleteById(requestId)
+            _paymentRequests.value = paymentRequestDao.getAll().map { it.toPaymentRequest() }
         }
     }
 
