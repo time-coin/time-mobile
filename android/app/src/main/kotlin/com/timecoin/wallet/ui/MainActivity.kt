@@ -3,8 +3,10 @@ package com.timecoin.wallet.ui
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -15,6 +17,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.google.android.play.core.appupdate.AppUpdateManagerFactory
+import com.google.android.play.core.appupdate.AppUpdateOptions
+import com.google.android.play.core.install.InstallStateUpdatedListener
+import com.google.android.play.core.install.model.AppUpdateType
+import com.google.android.play.core.install.model.InstallStatus
+import com.google.android.play.core.install.model.UpdateAvailability
 import com.timecoin.wallet.crypto.Address
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
@@ -22,6 +30,7 @@ import com.timecoin.wallet.ui.component.formatSatoshis
 import com.timecoin.wallet.ui.screen.*
 import com.timecoin.wallet.ui.theme.TimeCoinWalletTheme
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -29,21 +38,62 @@ class MainActivity : ComponentActivity() {
 
     @Inject lateinit var walletService: WalletService
 
+    private val appUpdateManager by lazy { AppUpdateManagerFactory.create(this) }
+
+    // Launcher for the flexible update confirmation flow
+    private val updateLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode != Activity.RESULT_OK) {
+            Log.w("AppUpdate", "Flexible update flow cancelled or failed: ${result.resultCode}")
+        }
+    }
+
+    // Listener that fires when a downloaded update is ready to install
+    private val installStateListener = InstallStateUpdatedListener { state ->
+        if (state.installStatus() == InstallStatus.DOWNLOADED) {
+            showUpdateSnackbar()
+        }
+    }
+
+    private var snackbarHostState: SnackbarHostState? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
 
         walletService.checkExistingWallet()
         handleShareIntent(intent)
+        appUpdateManager.registerListener(installStateListener)
+        checkForUpdate()
 
         setContent {
             TimeCoinWalletTheme {
+                val hostState = remember { SnackbarHostState() }
+                snackbarHostState = hostState
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
                 ) {
-                    WalletApp(walletService)
+                    Box(Modifier.fillMaxSize()) {
+                        WalletApp(walletService)
+                        SnackbarHost(
+                            hostState = hostState,
+                            modifier = Modifier.align(Alignment.BottomCenter),
+                        )
+                    }
                 }
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // If the user backgrounds the app and returns after a download completed,
+        // prompt them to install immediately.
+        appUpdateManager.appUpdateInfo.addOnSuccessListener { info ->
+            if (info.installStatus() == InstallStatus.DOWNLOADED) {
+                showUpdateSnackbar()
             }
         }
     }
@@ -55,7 +105,39 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        appUpdateManager.unregisterListener(installStateListener)
         if (isFinishing) walletService.shutdown()
+    }
+
+    private fun checkForUpdate() {
+        appUpdateManager.appUpdateInfo.addOnSuccessListener { info ->
+            if (info.updateAvailability() == UpdateAvailability.UPDATE_AVAILABLE &&
+                info.isUpdateTypeAllowed(AppUpdateType.FLEXIBLE)
+            ) {
+                appUpdateManager.startUpdateFlowForResult(
+                    info,
+                    updateLauncher,
+                    AppUpdateOptions.newBuilder(AppUpdateType.FLEXIBLE).build(),
+                )
+            }
+        }
+    }
+
+    private fun showUpdateSnackbar() {
+        val hostState = snackbarHostState ?: return
+        // Run on main thread — listener may fire on a background thread
+        mainExecutor.execute {
+            kotlinx.coroutines.MainScope().launch {
+                val result = hostState.showSnackbar(
+                    message = "Update downloaded",
+                    actionLabel = "Restart",
+                    duration = SnackbarDuration.Indefinite,
+                )
+                if (result == SnackbarResult.ActionPerformed) {
+                    appUpdateManager.completeUpdate()
+                }
+            }
+        }
     }
 
     /**
