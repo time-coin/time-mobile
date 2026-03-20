@@ -944,6 +944,7 @@ class WalletService @Inject constructor(
                         blockHash = tx.blockHash,
                         blockHeight = tx.blockHeight,
                         confirmations = tx.confirmations,
+                        memo = tx.memo,
                     )
                 )
                 Log.d(TAG, "  FEE: txid=${tx.txid.take(12)}.. amount=${tx.fee}")
@@ -1466,6 +1467,21 @@ class WalletService @Inject constructor(
                 refreshBalance()
                 refreshTransactions()
                 refreshUtxos()
+
+                // Attach the payment request memo to the send row in the DB so it
+                // shows in transaction history even though it's not on-chain.
+                if (entity.memo.isNotBlank()) {
+                    val sendRows = transactionDao.getAll()
+                        .filter { it.txid == txid && it.isSend && !it.isFee && it.memo.isBlank() }
+                    for (row in sendRows) {
+                        transactionDao.updateMemo(txid, row.vout, true, false, entity.memo)
+                    }
+                    _transactions.value = _transactions.value.map {
+                        if (it.txid == txid && it.isSend && !it.isFee && it.memo.isBlank())
+                            it.copy(memo = entity.memo) else it
+                    }
+                }
+
                 _screen.value = Screen.Overview
             } catch (e: Exception) {
                 _error.value = "Failed to accept request: ${e.message}"
