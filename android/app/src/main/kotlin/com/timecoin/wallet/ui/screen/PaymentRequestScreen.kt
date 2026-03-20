@@ -243,6 +243,7 @@ fun PaymentRequestItem(
     decimalPlaces: Int,
     onCancel: (() -> Unit)?,
     onReview: (() -> Unit)?,
+    onDelete: (() -> Unit)? = null,
 ) {
     val statusColor = when (request.status) {
         PaymentRequestStatus.Pending -> Color(0xFFFFA500)
@@ -374,6 +375,20 @@ fun PaymentRequestItem(
                             modifier = Modifier.height(28.dp),
                         ) {
                             Text("Review", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                    if (onDelete != null) {
+                        Spacer(Modifier.height(4.dp))
+                        IconButton(
+                            onClick = onDelete,
+                            modifier = Modifier.size(28.dp),
+                        ) {
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = "Delete",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
                 }
@@ -522,6 +537,7 @@ fun PaymentRequestsScreen(service: WalletService) {
                             decimalPlaces = decimalPlaces,
                             onCancel = null,
                             onReview = null,
+                            onDelete = { service.deletePaymentRequest(req.id) },
                         )
                         Spacer(Modifier.height(6.dp))
                     }
@@ -542,6 +558,7 @@ fun PaymentRequestsScreen(service: WalletService) {
                             decimalPlaces = decimalPlaces,
                             onCancel = null,
                             onReview = null,
+                            onDelete = { service.deletePaymentRequest(req.id) },
                         )
                         Spacer(Modifier.height(6.dp))
                     }

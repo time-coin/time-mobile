@@ -1411,6 +1411,14 @@ class WalletService @Inject constructor(
         _incomingPaymentRequest.value = null
     }
 
+    /** Delete a resolved (declined / cancelled / paid) payment request from local history. */
+    fun deletePaymentRequest(requestId: String) {
+        scope.launch {
+            paymentRequestDao.deleteById(requestId)
+            _paymentRequests.value = paymentRequestDao.getAll().map { it.toPaymentRequest() }
+        }
+    }
+
     /**
      * Accept an incoming payment request: validate funds, send the transaction,
      * notify the requester, and update local state.
