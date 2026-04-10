@@ -1,5 +1,9 @@
 package com.timecoin.wallet.ui.screen
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -12,8 +16,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.timecoin.wallet.crypto.Address
@@ -35,7 +42,13 @@ fun PaymentRequestScreen(service: WalletService) {
     val scannedAddress by service.scannedAddress.collectAsState()
     val loading by service.loading.collectAsState()
 
+    // Two-phase UI: contact list → form (mirrors SendScreen)
+    var showForm by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+
+    // Form fields
     var payerAddress by remember { mutableStateOf("") }
+    var payerName by remember { mutableStateOf("") }
     var amountStr by remember { mutableStateOf("") }
     var memo by remember { mutableStateOf("") }
     var requesterName by remember { mutableStateOf("") }
@@ -43,6 +56,10 @@ fun PaymentRequestScreen(service: WalletService) {
     var addressError by remember { mutableStateOf<String?>(null) }
     var fromAddressIdx by remember { mutableStateOf(0) }
     var fromDropdownExpanded by remember { mutableStateOf(false) }
+
+    val network = if (isTestnet) NetworkType.Testnet else NetworkType.Mainnet
+    val ownAddresses = remember(addresses) { addresses.toSet() }
+    val amountSats = (amountStr.toDoubleOrNull()?.times(100_000_000))?.toLong() ?: 0L
 
     // Pair each own address with its label from contacts
     val ownAddressOptions = remember(addresses, contacts) {
@@ -53,186 +70,355 @@ fun PaymentRequestScreen(service: WalletService) {
         }
     }
 
-    val network = if (isTestnet) NetworkType.Testnet else NetworkType.Mainnet
-    val ownAddresses = remember(addresses) { addresses.toSet() }
-    val amountSats = (amountStr.toDoubleOrNull()?.times(100_000_000))?.toLong() ?: 0L
+    // External contacts for picker
+    val externalContacts = remember(contacts) { contacts.filter { !it.isOwned } }
+    val filteredContacts = remember(externalContacts, searchQuery) {
+        if (searchQuery.isBlank()) externalContacts
+        else {
+            val q = searchQuery.lowercase()
+            externalContacts.filter {
+                it.name.lowercase().contains(q) ||
+                    it.address.lowercase().contains(q) ||
+                    it.phone.contains(q)
+            }
+        }
+    }
 
-    // Consume QR scan result (shared with Send screen via same flow)
+    fun resetForm() {
+        payerAddress = ""; payerName = ""; amountStr = ""; memo = ""; requesterName = ""
+        addressError = null; showOptional = false; fromAddressIdx = 0
+    }
+
+    // Consume QR scan result
     LaunchedEffect(scannedAddress) {
         scannedAddress?.let { addr ->
             payerAddress = addr
             service.clearScannedAddress()
             addressError = validatePayerAddress(addr, network, ownAddresses)
+            showForm = true
         }
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Request Payment") },
+                title = { Text(if (showForm) "Request Payment" else "Request Payment") },
                 navigationIcon = {
-                    IconButton(onClick = { service.navigateTo(Screen.PaymentRequests) }) {
+                    IconButton(onClick = {
+                        if (showForm) { showForm = false; resetForm() }
+                        else service.navigateTo(Screen.PaymentRequests)
+                    }) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                     }
                 },
-                actions = { AppHamburgerMenu(service) },
+                actions = {
+                    if (!showForm) {
+                        // Manual entry without picking a contact
+                        IconButton(onClick = { showForm = true }) {
+                            Icon(Icons.Default.RequestPage, contentDescription = "Enter manually")
+                        }
+                    }
+                    AppHamburgerMenu(service)
+                },
             )
         },
     ) { padding ->
-        val clipboardManager = LocalClipboardManager.current
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 16.dp)
-                .verticalScroll(rememberScrollState()),
-        ) {
-            Spacer(Modifier.height(8.dp))
-
-            // "Receive To" address selector
-            if (ownAddressOptions.size > 1) {
-                val selectedOption = ownAddressOptions.getOrNull(fromAddressIdx) ?: ownAddressOptions.first()
-                ExposedDropdownMenuBox(
-                    expanded = fromDropdownExpanded,
-                    onExpandedChange = { fromDropdownExpanded = it },
-                ) {
-                    OutlinedTextField(
-                        value = selectedOption.third,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Receive To") },
-                        modifier = Modifier.fillMaxWidth().menuAnchor(),
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = fromDropdownExpanded) },
-                    )
-                    ExposedDropdownMenu(
-                        expanded = fromDropdownExpanded,
-                        onDismissRequest = { fromDropdownExpanded = false },
-                    ) {
-                        ownAddressOptions.forEach { (idx, _, label) ->
-                            DropdownMenuItem(
-                                text = { Text(label) },
-                                onClick = {
-                                    fromAddressIdx = idx
-                                    fromDropdownExpanded = false
-                                },
-                            )
-                        }
-                    }
-                }
+        if (showForm) {
+            // ── Request Form ──
+            val clipboardManager = LocalClipboardManager.current
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(horizontal = 16.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
                 Spacer(Modifier.height(8.dp))
-            }
 
-            // Payer address
-            OutlinedTextField(
-                value = payerAddress,
-                onValueChange = {
-                    payerAddress = it
-                    addressError = validatePayerAddress(it, network, ownAddresses)
-                },
-                label = { Text("Payer's TIME Address") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                isError = addressError != null,
-                supportingText = addressError?.let { err ->
-                    { Text(err, color = MaterialTheme.colorScheme.error) }
-                },
-                trailingIcon = {
+                // Payer name chip (when pre-filled from contact)
+                if (payerName.isNotBlank()) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = {
-                            clipboardManager.getText()?.text?.trim()?.let {
-                                payerAddress = it
-                                addressError = validatePayerAddress(it, network, ownAddresses)
+                        Icon(
+                            Icons.Default.Person,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            payerName,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                }
+
+                // "Receive To" address selector
+                if (ownAddressOptions.size > 1) {
+                    val selectedOption = ownAddressOptions.getOrNull(fromAddressIdx) ?: ownAddressOptions.first()
+                    ExposedDropdownMenuBox(
+                        expanded = fromDropdownExpanded,
+                        onExpandedChange = { fromDropdownExpanded = it },
+                    ) {
+                        OutlinedTextField(
+                            value = selectedOption.third,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Receive To") },
+                            modifier = Modifier.fillMaxWidth().menuAnchor(),
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = fromDropdownExpanded) },
+                        )
+                        ExposedDropdownMenu(
+                            expanded = fromDropdownExpanded,
+                            onDismissRequest = { fromDropdownExpanded = false },
+                        ) {
+                            ownAddressOptions.forEach { (idx, _, label) ->
+                                DropdownMenuItem(
+                                    text = { Text(label) },
+                                    onClick = {
+                                        fromAddressIdx = idx
+                                        fromDropdownExpanded = false
+                                    },
+                                )
                             }
-                        }) {
-                            Icon(Icons.Default.ContentPaste, contentDescription = "Paste address")
-                        }
-                        IconButton(onClick = { service.navigateTo(Screen.PaymentRequestQrScanner) }) {
-                            Icon(Icons.Default.QrCodeScanner, contentDescription = "Scan QR")
                         }
                     }
-                },
-            )
-            Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(8.dp))
+                }
 
-            // Amount
-            OutlinedTextField(
-                value = amountStr,
-                onValueChange = { amountStr = it },
-                label = { Text("Amount (TIME)") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-            )
-            Spacer(Modifier.height(4.dp))
-
-            // Optional fields toggle
-            TextButton(onClick = { showOptional = !showOptional }) {
-                Icon(
-                    if (showOptional) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    if (showOptional) "Hide optional fields" else "Add your name or a memo",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-
-            if (showOptional) {
+                // Payer address
                 OutlinedTextField(
-                    value = requesterName,
-                    onValueChange = { requesterName = it },
-                    label = { Text("Your Name (optional)") },
+                    value = payerAddress,
+                    onValueChange = {
+                        payerAddress = it
+                        addressError = validatePayerAddress(it, network, ownAddresses)
+                    },
+                    label = { Text("Payer's TIME Address") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    leadingIcon = {
-                        Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(20.dp))
+                    isError = addressError != null,
+                    supportingText = addressError?.let { err ->
+                        { Text(err, color = MaterialTheme.colorScheme.error) }
+                    },
+                    trailingIcon = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = {
+                                clipboardManager.getText()?.text?.trim()?.let {
+                                    payerAddress = it
+                                    addressError = validatePayerAddress(it, network, ownAddresses)
+                                }
+                            }) {
+                                Icon(Icons.Default.ContentPaste, contentDescription = "Paste address")
+                            }
+                            IconButton(onClick = { service.navigateTo(Screen.PaymentRequestQrScanner) }) {
+                                Icon(Icons.Default.QrCodeScanner, contentDescription = "Scan QR")
+                            }
+                        }
                     },
                 )
                 Spacer(Modifier.height(8.dp))
+
+                // Amount
                 OutlinedTextField(
-                    value = memo,
-                    onValueChange = { memo = it },
-                    label = { Text("Memo (optional)") },
+                    value = amountStr,
+                    onValueChange = { amountStr = it },
+                    label = { Text("Amount (TIME)") },
                     modifier = Modifier.fillMaxWidth(),
-                    maxLines = 3,
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 )
+                Spacer(Modifier.height(4.dp))
+
+                // Optional fields toggle
+                TextButton(onClick = { showOptional = !showOptional }) {
+                    Icon(
+                        if (showOptional) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        if (showOptional) "Hide optional fields" else "Add your name or a memo",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+
+                if (showOptional) {
+                    OutlinedTextField(
+                        value = requesterName,
+                        onValueChange = { requesterName = it },
+                        label = { Text("Your Name (optional)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        leadingIcon = {
+                            Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(20.dp))
+                        },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = memo,
+                        onValueChange = { memo = it },
+                        label = { Text("Memo (optional)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        maxLines = 3,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+
                 Spacer(Modifier.height(8.dp))
+
+                val canSend = payerAddress.isNotEmpty() && addressError == null && amountSats > 0 && !loading
+                Button(
+                    onClick = {
+                        service.sendPaymentRequest(
+                            payerAddress = payerAddress,
+                            amountSats = amountSats,
+                            memo = memo.trim(),
+                            requesterName = requesterName.trim(),
+                            fromAddressIdx = fromAddressIdx,
+                        )
+                        resetForm()
+                        showForm = false
+                    },
+                    enabled = canSend,
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                ) {
+                    if (loading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                    } else {
+                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Send Payment Request", fontSize = 16.sp)
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
             }
-
-            Spacer(Modifier.height(8.dp))
-
-            val canSend = payerAddress.isNotEmpty() && addressError == null && amountSats > 0 && !loading
-            Button(
-                onClick = {
-                    service.sendPaymentRequest(
-                        payerAddress = payerAddress,
-                        amountSats = amountSats,
-                        memo = memo.trim(),
-                        requesterName = requesterName.trim(),
-                        fromAddressIdx = fromAddressIdx,
-                    )
-                    // Clear form on send
-                    payerAddress = ""; amountStr = ""; memo = ""; requesterName = ""
-                    addressError = null; showOptional = false
-                },
-                enabled = canSend,
-                modifier = Modifier.fillMaxWidth().height(56.dp),
+        } else {
+            // ── Contact Picker ──
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(horizontal = 16.dp),
             ) {
-                if (loading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(24.dp),
-                        color = MaterialTheme.colorScheme.onPrimary,
-                    )
+                Spacer(Modifier.height(8.dp))
+                TextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Search contacts…") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(Icons.Default.Clear, contentDescription = "Clear")
+                            }
+                        }
+                    },
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    ),
+                    shape = MaterialTheme.shapes.medium,
+                )
+                Spacer(Modifier.height(12.dp))
+
+                if (filteredContacts.isEmpty()) {
+                    Box(
+                        Modifier.fillMaxWidth().weight(1f),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                Icons.Default.People,
+                                contentDescription = null,
+                                modifier = Modifier.size(48.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                if (searchQuery.isNotBlank()) "No matching contacts"
+                                else "No contacts yet",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            if (searchQuery.isBlank()) {
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    "Tap the icon in the top-right to enter an address manually",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                )
+                            }
+                        }
+                    }
                 } else {
-                    Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Send Payment Request", fontSize = 16.sp)
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
+                        filteredContacts.forEach { contact ->
+                            Card(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp)
+                                    .clickable {
+                                        payerAddress = contact.address
+                                        payerName = contact.name.ifBlank { "" }
+                                        addressError = validatePayerAddress(contact.address, network, ownAddresses)
+                                        showForm = true
+                                    },
+                            ) {
+                                Row(
+                                    Modifier.padding(12.dp).fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Surface(
+                                        shape = MaterialTheme.shapes.extraLarge,
+                                        color = MaterialTheme.colorScheme.primaryContainer,
+                                        modifier = Modifier.size(40.dp),
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Text(
+                                                (contact.name.firstOrNull() ?: contact.address.first()).uppercase(),
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.width(12.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        if (contact.name.isNotBlank()) {
+                                            Text(
+                                                contact.name,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.Medium,
+                                            )
+                                        }
+                                        Text(
+                                            contact.address.take(14) + "…" + contact.address.takeLast(6),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                    Icon(
+                                        Icons.Default.ChevronRight,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
-
-            Spacer(Modifier.height(16.dp))
         }
     }
 }
@@ -244,7 +430,9 @@ fun PaymentRequestItem(
     onCancel: (() -> Unit)?,
     onReview: (() -> Unit)?,
     onDelete: (() -> Unit)? = null,
+    onViewTransaction: ((String) -> Unit)? = null,
 ) {
+    val context = LocalContext.current
     val statusColor = when (request.status) {
         PaymentRequestStatus.Pending -> Color(0xFFFFA500)
         PaymentRequestStatus.Accepted -> Color(0xFF2196F3)
@@ -316,6 +504,54 @@ fun PaymentRequestItem(
                             style = MaterialTheme.typography.labelSmall,
                             color = expiryColor,
                         )
+                    }
+                    // Paid txid row
+                    if (request.status == PaymentRequestStatus.Paid && request.paidTxid.isNotBlank()) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = "TXID",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = request.paidTxid,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            IconButton(
+                                onClick = {
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    cm.setPrimaryClip(ClipData.newPlainText("txid", request.paidTxid))
+                                },
+                                modifier = Modifier.size(28.dp),
+                            ) {
+                                Icon(
+                                    Icons.Default.ContentCopy,
+                                    contentDescription = "Copy txid",
+                                    modifier = Modifier.size(14.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        if (onViewTransaction != null) {
+                            TextButton(
+                                onClick = { onViewTransaction(request.paidTxid) },
+                                contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
+                            ) {
+                                Icon(
+                                    Icons.Default.OpenInNew,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(12.dp),
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text("View transaction", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
                     }
                 }
                 Column(horizontalAlignment = Alignment.End) {
@@ -538,6 +774,8 @@ fun PaymentRequestsScreen(service: WalletService) {
                             onCancel = null,
                             onReview = null,
                             onDelete = { service.deletePaymentRequest(req.id) },
+                            onViewTransaction = if (req.paidTxid.isNotBlank())
+                                { txid -> service.showTransactionByTxid(txid) } else null,
                         )
                         Spacer(Modifier.height(6.dp))
                     }
@@ -559,6 +797,8 @@ fun PaymentRequestsScreen(service: WalletService) {
                             onCancel = null,
                             onReview = null,
                             onDelete = { service.deletePaymentRequest(req.id) },
+                            onViewTransaction = if (req.paidTxid.isNotBlank())
+                                { txid -> service.showTransactionByTxid(txid) } else null,
                         )
                         Spacer(Modifier.height(6.dp))
                     }

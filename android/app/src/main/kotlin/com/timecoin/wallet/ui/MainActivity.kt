@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -40,16 +41,17 @@ class MainActivity : ComponentActivity() {
 
     private val appUpdateManager by lazy { AppUpdateManagerFactory.create(this) }
 
-    // Launcher for the flexible update confirmation flow
+    // Launcher for the immediate update flow (re-checks if user dismissed and came back)
     private val updateLauncher = registerForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
         if (result.resultCode != Activity.RESULT_OK) {
-            Log.w("AppUpdate", "Flexible update flow cancelled or failed: ${result.resultCode}")
+            Log.w("AppUpdate", "Immediate update flow cancelled or failed: ${result.resultCode}")
+            // User dismissed — re-check so we can prompt again on next resume
         }
     }
 
-    // Listener that fires when a downloaded update is ready to install
+    // Listener for flexible fallback (downloaded in background)
     private val installStateListener = InstallStateUpdatedListener { state ->
         if (state.installStatus() == InstallStatus.DOWNLOADED) {
             showUpdateSnackbar()
@@ -66,6 +68,7 @@ class MainActivity : ComponentActivity() {
         handleShareIntent(intent)
         appUpdateManager.registerListener(installStateListener)
         checkForUpdate()
+        requestNotificationPermission()
 
         setContent {
             TimeCoinWalletTheme {
@@ -89,11 +92,18 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // If the user backgrounds the app and returns after a download completed,
-        // prompt them to install immediately.
         appUpdateManager.appUpdateInfo.addOnSuccessListener { info ->
-            if (info.installStatus() == InstallStatus.DOWNLOADED) {
-                showUpdateSnackbar()
+            when {
+                // Immediate update was interrupted (e.g. app killed mid-download) — resume it
+                info.updateAvailability() == UpdateAvailability.DEVELOPER_TRIGGERED_UPDATE_IN_PROGRESS -> {
+                    appUpdateManager.startUpdateFlowForResult(
+                        info,
+                        updateLauncher,
+                        AppUpdateOptions.newBuilder(AppUpdateType.IMMEDIATE).build(),
+                    )
+                }
+                // Flexible download finished while app was backgrounded
+                info.installStatus() == InstallStatus.DOWNLOADED -> showUpdateSnackbar()
             }
         }
     }
@@ -109,16 +119,27 @@ class MainActivity : ComponentActivity() {
         if (isFinishing) walletService.shutdown()
     }
 
+    private fun requestNotificationPermission() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 0)
+            }
+        }
+    }
+
     private fun checkForUpdate() {
         appUpdateManager.appUpdateInfo.addOnSuccessListener { info ->
-            if (info.updateAvailability() == UpdateAvailability.UPDATE_AVAILABLE &&
-                info.isUpdateTypeAllowed(AppUpdateType.FLEXIBLE)
-            ) {
-                appUpdateManager.startUpdateFlowForResult(
-                    info,
-                    updateLauncher,
-                    AppUpdateOptions.newBuilder(AppUpdateType.FLEXIBLE).build(),
-                )
+            if (info.updateAvailability() == UpdateAvailability.UPDATE_AVAILABLE) {
+                val options = when {
+                    info.isUpdateTypeAllowed(AppUpdateType.IMMEDIATE) ->
+                        AppUpdateOptions.newBuilder(AppUpdateType.IMMEDIATE).build()
+                    info.isUpdateTypeAllowed(AppUpdateType.FLEXIBLE) ->
+                        AppUpdateOptions.newBuilder(AppUpdateType.FLEXIBLE).build()
+                    else -> return@addOnSuccessListener
+                }
+                appUpdateManager.startUpdateFlowForResult(info, updateLauncher, options)
             }
         }
     }
@@ -183,6 +204,22 @@ fun WalletApp(service: WalletService) {
     val incomingPaymentRequest by service.incomingPaymentRequest.collectAsState()
     val shouldExit by service.shouldExit.collectAsState()
     val activity = androidx.compose.ui.platform.LocalContext.current as? Activity
+
+    // Back press on any post-login screen navigates to Overview instead of exiting.
+    // Only Overview (and pre-wallet screens) let the system handle back (which exits).
+    val backToOverviewScreens = remember {
+        setOf(
+            Screen.Send, Screen.Receive,
+            Screen.Transactions, Screen.TransactionDetail,
+            Screen.Connections, Screen.Settings, Screen.ChangePin,
+            Screen.PaymentRequest, Screen.PaymentRequestReview,
+            Screen.PaymentRequests,
+        )
+    }
+    BackHandler(enabled = currentScreen in backToOverviewScreens) {
+        service.navigateTo(Screen.Overview)
+    }
+
     LaunchedEffect(shouldExit) {
         if (shouldExit) {
             service.clearShouldExit()

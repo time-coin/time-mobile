@@ -17,12 +17,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.fragment.app.FragmentActivity
-import com.timecoin.wallet.crypto.BiometricHelper
 import com.timecoin.wallet.crypto.NetworkType
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
-import com.timecoin.wallet.wallet.WalletManager
 
 /**
  * PIN setup screen — shown during wallet creation after mnemonic step.
@@ -33,25 +30,8 @@ fun PinSetupScreen(service: WalletService) {
     var confirmPin by remember { mutableStateOf("") }
     var isConfirming by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var askBiometric by remember { mutableStateOf(false) }
     val loading by service.loading.collectAsState()
     val context = LocalContext.current
-    val biometricAvailable = remember { BiometricHelper.isAvailable(context) }
-
-    if (askBiometric && biometricAvailable) {
-        BiometricEnrollDialog(
-            onEnable = {
-                val activity = context as? FragmentActivity
-                if (activity != null) {
-                    BiometricHelper.enroll(activity, pin) { success ->
-                        // Wallet already created, just proceed
-                    }
-                }
-                askBiometric = false
-            },
-            onSkip = { askBiometric = false },
-        )
-    }
 
     PinEntryLayout(
         title = if (isConfirming) "Confirm PIN" else "Set a 4-Digit PIN",
@@ -68,7 +48,6 @@ fun PinSetupScreen(service: WalletService) {
                 if (confirmPin.length == 4) {
                     if (confirmPin == pin) {
                         service.createWalletWithPin(pin)
-                        if (biometricAvailable) askBiometric = true
                     } else {
                         error = "PINs do not match"
                         confirmPin = ""
@@ -101,29 +80,8 @@ fun PinUnlockScreen(service: WalletService) {
     val serviceError by service.error.collectAsState()
     var localError by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
-    val biometricAvailable = remember {
-        BiometricHelper.isAvailable(context) && BiometricHelper.isEnrolled(context)
-    }
-
-    val walletDir = context.filesDir
-    val hasMainnet = WalletManager.exists(walletDir, NetworkType.Mainnet)
-    val network = if (hasMainnet) NetworkType.Mainnet else NetworkType.Testnet
-
-    // Auto-trigger biometric on first composition
-    var biometricTriggered by remember { mutableStateOf(false) }
-    LaunchedEffect(biometricAvailable) {
-        if (biometricAvailable && !biometricTriggered) {
-            biometricTriggered = true
-            val activity = context as? FragmentActivity
-            if (activity != null) {
-                BiometricHelper.authenticate(activity) { recoveredPin ->
-                    if (recoveredPin != null) {
-                        service.loadWallet(network, recoveredPin)
-                    }
-                }
-            }
-        }
-    }
+    val isTestnet by service.isTestnet.collectAsState()
+    val network = if (isTestnet) NetworkType.Testnet else NetworkType.Mainnet
 
     // Clear local error when service error changes
     LaunchedEffect(serviceError) {
@@ -139,7 +97,7 @@ fun PinUnlockScreen(service: WalletService) {
         subtitle = "Enter your 4-digit PIN",
         pin = pin,
         error = localError,
-        showBiometric = biometricAvailable,
+        showBiometric = false,
         loading = loading,
         onDigit = { digit ->
             localError = null
@@ -152,16 +110,7 @@ fun PinUnlockScreen(service: WalletService) {
             localError = null
             pin = pin.dropLast(1)
         },
-        onBiometric = {
-            val activity = context as? FragmentActivity
-            if (activity != null) {
-                BiometricHelper.authenticate(activity) { recoveredPin ->
-                    if (recoveredPin != null) {
-                        service.loadWallet(network, recoveredPin)
-                    }
-                }
-            }
-        },
+        onBiometric = {},
         bottomContent = {
             var showResetDialog by remember { mutableStateOf(false) }
 
@@ -182,18 +131,6 @@ fun PinUnlockScreen(service: WalletService) {
                 )
             }
         },
-    )
-}
-
-@Composable
-private fun BiometricEnrollDialog(onEnable: () -> Unit, onSkip: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onSkip,
-        icon = { Icon(Icons.Default.Fingerprint, contentDescription = null, modifier = Modifier.size(48.dp)) },
-        title = { Text("Enable Biometric Unlock?", textAlign = TextAlign.Center) },
-        text = { Text("Use your fingerprint to unlock your wallet instead of entering your PIN each time.") },
-        confirmButton = { TextButton(onClick = onEnable) { Text("Enable") } },
-        dismissButton = { TextButton(onClick = onSkip) { Text("Skip") } },
     )
 }
 
@@ -395,9 +332,6 @@ fun ChangePinScreen(service: WalletService) {
     var stage by remember { mutableIntStateOf(0) }
 
     val context = LocalContext.current
-    val biometricAvailable = remember {
-        BiometricHelper.isAvailable(context) && BiometricHelper.isEnrolled(context)
-    }
 
     val title = when (stage) {
         0 -> "Enter Current PIN"
@@ -445,7 +379,7 @@ fun ChangePinScreen(service: WalletService) {
         subtitle = subtitle,
         pin = activePin,
         error = error,
-        showBiometric = stage == 0 && biometricAvailable,
+        showBiometric = false,
         loading = false,
         onDigit = { digit ->
             error = null
@@ -471,13 +405,6 @@ fun ChangePinScreen(service: WalletService) {
                     if (confirmPin.length == 4) {
                         if (confirmPin == newPin) {
                             if (service.changePin(currentPin, newPin)) {
-                                // Re-enroll biometric with new PIN if available
-                                if (biometricAvailable) {
-                                    val activity = context as? FragmentActivity
-                                    if (activity != null) {
-                                        BiometricHelper.enroll(activity, newPin) { _ -> }
-                                    }
-                                }
                                 stage = 3
                             } else {
                                 error = "Failed to change PIN"
@@ -499,19 +426,7 @@ fun ChangePinScreen(service: WalletService) {
                 2 -> confirmPin = confirmPin.dropLast(1)
             }
         },
-        onBiometric = {
-            if (stage == 0) {
-                val activity = context as? FragmentActivity
-                if (activity != null) {
-                    BiometricHelper.authenticate(activity) { recoveredPin ->
-                        if (recoveredPin != null) {
-                            currentPin = recoveredPin
-                            stage = 1
-                        }
-                    }
-                }
-            }
-        },
+        onBiometric = {},
         bottomContent = if (stage == 0) {
             {
                 TextButton(onClick = { service.navigateTo(Screen.Settings) }) {

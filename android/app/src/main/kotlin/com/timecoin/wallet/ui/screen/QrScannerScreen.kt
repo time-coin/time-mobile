@@ -2,7 +2,6 @@ package com.timecoin.wallet.ui.screen
 
 import android.Manifest
 import android.util.Log
-import android.util.Size
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -10,6 +9,10 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import android.media.ToneGenerator
+import android.media.AudioManager
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -22,7 +25,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -47,7 +49,6 @@ fun QrScannerScreen(
 
     var hasCameraPermission by remember { mutableStateOf(false) }
     var flashEnabled by remember { mutableStateOf(false) }
-    var scannedValue by remember { mutableStateOf<String?>(null) }
     var camera by remember { mutableStateOf<androidx.camera.core.Camera?>(null) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -90,7 +91,6 @@ fun QrScannerScreen(
         },
     ) { padding ->
         if (!hasCameraPermission) {
-            // Permission denied state
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -119,7 +119,6 @@ fun QrScannerScreen(
                     .fillMaxSize()
                     .padding(padding),
             ) {
-                // Camera preview
                 val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
 
                 DisposableEffect(Unit) {
@@ -134,63 +133,72 @@ fun QrScannerScreen(
 
                         val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
                         cameraProviderFuture.addListener({
-                            val cameraProvider = cameraProviderFuture.get()
+                            try {
+                                val cameraProvider = cameraProviderFuture.get()
 
-                            val preview = Preview.Builder().build().also {
-                                it.surfaceProvider = previewView.surfaceProvider
-                            }
-
-                            val imageAnalysis = ImageAnalysis.Builder()
-                                .setTargetResolution(Size(1280, 720))
-                                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                                .build()
-                                .also { analysis ->
-                                    analysis.setAnalyzer(cameraExecutor) { imageProxy ->
-                                        if (scannedValue != null) {
-                                            imageProxy.close()
-                                            return@setAnalyzer
-                                        }
-                                        val buffer = imageProxy.planes[0].buffer
-                                        val bytes = ByteArray(buffer.remaining())
-                                        buffer.get(bytes)
-
-                                        val source = PlanarYUVLuminanceSource(
-                                            bytes,
-                                            imageProxy.width,
-                                            imageProxy.height,
-                                            0, 0,
-                                            imageProxy.width,
-                                            imageProxy.height,
-                                            false,
-                                        )
-                                        val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
-
-                                        try {
-                                            val reader = MultiFormatReader().apply {
-                                                setHints(
-                                                    mapOf(
-                                                        DecodeHintType.POSSIBLE_FORMATS to listOf(
-                                                            BarcodeFormat.QR_CODE,
-                                                            BarcodeFormat.DATA_MATRIX,
-                                                        ),
-                                                        DecodeHintType.TRY_HARDER to true,
-                                                    )
-                                                )
-                                            }
-                                            val result = reader.decode(binaryBitmap)
-                                            scannedValue = result.text
-                                            Log.d("QrScanner", "Scanned: ${result.text}")
-                                        } catch (_: NotFoundException) {
-                                            // No QR code found in this frame
-                                        } catch (e: Exception) {
-                                            Log.w("QrScanner", "Decode error", e)
-                                        } finally {
-                                            imageProxy.close()
-                                        }
-                                    }
+                                val preview = Preview.Builder().build().also {
+                                    it.surfaceProvider = previewView.surfaceProvider
                                 }
 
-                            try {
+                                val imageAnalysis = ImageAnalysis.Builder()
+                                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                                    .build()
+                                    .also { analysis ->
+                                        analysis.setAnalyzer(cameraExecutor) { imageProxy ->
+                                            try {
+                                                val yPlane    = imageProxy.planes[0]
+                                                val width     = imageProxy.width
+                                                val height    = imageProxy.height
+                                                val rowStride = yPlane.rowStride
+                                                val buffer    = yPlane.buffer
+
+                                                buffer.rewind()
+                                                val bytes = ByteArray(width * height)
+                                                for (row in 0 until height) {
+                                                    buffer.position(row * rowStride)
+                                                    buffer.get(bytes, row * width, width)
+                                                }
+
+                                                val hints = mapOf(
+                                                    DecodeHintType.POSSIBLE_FORMATS to listOf(
+                                                        BarcodeFormat.QR_CODE,
+                                                        BarcodeFormat.DATA_MATRIX,
+                                                    ),
+                                                    DecodeHintType.TRY_HARDER to true,
+                                                )
+
+                                                var decodedText: String? = null
+                                                for (mirror in listOf(false, true)) {
+                                                    if (decodedText != null) break
+                                                    try {
+                                                        val src = PlanarYUVLuminanceSource(
+                                                            bytes, width, height, 0, 0, width, height, mirror,
+                                                        )
+                                                        decodedText = MultiFormatReader()
+                                                            .apply { setHints(hints) }
+                                                            .decode(BinaryBitmap(HybridBinarizer(src)))
+                                                            .text
+                                                    } catch (_: NotFoundException) { }
+                                                }
+
+                                                if (decodedText != null) {
+                                                    Log.d("QrScanner", "Scanned: $decodedText")
+                                                    try {
+                                                        ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80)
+                                                            .startTone(ToneGenerator.TONE_PROP_BEEP, 150)
+                                                    } catch (_: Exception) { }
+                                                    Handler(Looper.getMainLooper()).post {
+                                                        onResult(decodedText!!)
+                                                    }
+                                                }
+                                            } catch (e: Exception) {
+                                                Log.w("QrScanner", "Frame error", e)
+                                            } finally {
+                                                imageProxy.close()
+                                            }
+                                        }
+                                    }
+
                                 cameraProvider.unbindAll()
                                 camera = cameraProvider.bindToLifecycle(
                                     lifecycleOwner,
@@ -199,7 +207,7 @@ fun QrScannerScreen(
                                     imageAnalysis,
                                 )
                             } catch (e: Exception) {
-                                Log.e("QrScanner", "Camera bind failed", e)
+                                Log.e("QrScanner", "Camera setup failed", e)
                             }
                         }, ContextCompat.getMainExecutor(ctx))
 
@@ -212,12 +220,10 @@ fun QrScannerScreen(
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val scanBoxSize = size.minDimension * 0.65f
                     val left = (size.width - scanBoxSize) / 2
-                    val top = (size.height - scanBoxSize) / 2
+                    val top  = (size.height - scanBoxSize) / 2
 
-                    // Semi-transparent background
                     drawRect(Color.Black.copy(alpha = 0.5f))
 
-                    // Clear the scan area
                     drawRoundRect(
                         color = Color.Transparent,
                         topLeft = Offset(left, top),
@@ -226,7 +232,6 @@ fun QrScannerScreen(
                         blendMode = BlendMode.Clear,
                     )
 
-                    // Border around scan area
                     drawRoundRect(
                         color = Color.White,
                         topLeft = Offset(left, top),
@@ -236,7 +241,6 @@ fun QrScannerScreen(
                     )
                 }
 
-                // Instruction text
                 Text(
                     text = "Point camera at a QR code",
                     color = Color.White,
@@ -245,32 +249,6 @@ fun QrScannerScreen(
                         .align(Alignment.BottomCenter)
                         .padding(bottom = 64.dp),
                 )
-
-                // Result dialog
-                scannedValue?.let { value ->
-                    AlertDialog(
-                        onDismissRequest = { scannedValue = null },
-                        title = { Text("QR Code Scanned") },
-                        text = {
-                            Text(
-                                value,
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                        },
-                        confirmButton = {
-                            Button(onClick = {
-                                onResult(value)
-                            }) {
-                                Text("Use Address")
-                            }
-                        },
-                        dismissButton = {
-                            OutlinedButton(onClick = { scannedValue = null }) {
-                                Text("Scan Again")
-                            }
-                        },
-                    )
-                }
             }
         }
     }

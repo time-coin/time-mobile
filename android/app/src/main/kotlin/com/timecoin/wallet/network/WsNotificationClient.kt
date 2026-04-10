@@ -96,17 +96,15 @@ class WsNotificationClient(
                 this@WsNotificationClient.webSocket = webSocket
                 _events.tryEmit(WsEvent.Connected(url))
 
-                // Subscribe to each address individually (matches desktop format)
-                for (addr in addresses) {
-                    val subscribe = buildJsonObject {
-                        put("method", "subscribe")
-                        put("params", buildJsonObject {
-                            put("address", addr)
-                        })
-                    }
-                    webSocket.send(subscribe.toString())
+                // Subscribe all addresses in one batch message, with individual fallback
+                val batchSubscribe = buildJsonObject {
+                    put("method", "subscribe_batch")
+                    put("params", buildJsonObject {
+                        put("addresses", buildJsonArray { addresses.forEach { add(it) } })
+                    })
                 }
-                Log.d(TAG, "Subscribed to ${addresses.size} addresses")
+                webSocket.send(batchSubscribe.toString())
+                Log.d(TAG, "Subscribed to ${addresses.size} addresses (batch)")
 
                 // Start heartbeat ping every 25 seconds
                 pingJob?.cancel()
@@ -145,6 +143,10 @@ class WsNotificationClient(
                         "subscribed" -> {
                             val addr = data?.get("address")?.jsonPrimitive?.contentOrNull
                             Log.d(TAG, "Subscription confirmed for $addr")
+                        }
+                        "subscribed_batch" -> {
+                            val count = data?.get("count")?.jsonPrimitive?.intOrNull
+                            Log.d(TAG, "Batch subscription confirmed ($count addresses)")
                         }
                         "pong" -> { /* heartbeat response, ignore */ }
                         "tx_notification" -> {

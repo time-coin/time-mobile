@@ -54,6 +54,13 @@ class WalletManager private constructor(
     fun deriveKeypair(index: Int): Keypair =
         MnemonicHelper.deriveKeypairBip44(mnemonic, "", 0, 0, index)
 
+    /** Return the hex-encoded Ed25519 public key for a given owned address, or null if not found. */
+    fun getPublicKeyHex(address: String): String? {
+        val index = addresses.indexOf(address)
+        if (index < 0) return null
+        return deriveKeypair(index).publicKeyBytes().toHexString()
+    }
+
     /**
      * Trim the address list to only keep addresses up to [count].
      * Used to prune empty gap-scan addresses after a reindex.
@@ -84,12 +91,15 @@ class WalletManager private constructor(
         toAddress: String,
         amount: Long,
         feeSchedule: FeeSchedule = FeeSchedule(),
+        fromAddress: String? = null,
     ): Transaction {
         val fee = feeSchedule.calculateFee(amount)
         val totalNeeded = amount + fee
 
-        // Select UTXOs (simple greedy: use all spendable until we have enough)
-        val spendable = utxos.filter { it.spendable }.sortedByDescending { it.amount }
+        // Select UTXOs — optionally restricted to a specific source address
+        val spendable = utxos
+            .filter { it.spendable && (fromAddress == null || it.address == fromAddress) }
+            .sortedByDescending { it.amount }
         var accumulated = 0L
         val selected = mutableListOf<Utxo>()
         for (utxo in spendable) {
@@ -117,15 +127,20 @@ class WalletManager private constructor(
         }
         tx.addOutput(TxOutput.new(amount, recipientAddr))
 
-        // Change output (back to ourselves)
+        // Change output — back to the source address (or primary if none specified)
         val change = accumulated - totalNeeded
         if (change > 0) {
-            val changeAddr = Address.fromString(primaryAddress)
+            val changeAddrStr = fromAddress ?: primaryAddress
+            val changeAddr = Address.fromString(changeAddrStr)
             tx.addOutput(TxOutput.new(change, changeAddr))
         }
 
-        // Sign all inputs with the primary keypair
-        tx.signAll(keypair)
+        // Sign all inputs with the keypair for the source address (or primary)
+        val signingKeypair = if (fromAddress != null && fromAddress != primaryAddress) {
+            val idx = addresses.indexOf(fromAddress)
+            if (idx >= 0) deriveKeypair(idx) else keypair
+        } else keypair
+        tx.signAll(signingKeypair)
 
         // Remove spent UTXOs
         for (utxo in selected) {
@@ -196,15 +211,10 @@ class WalletManager private constructor(
             }
         }
 
-        /** Create a new wallet from a mnemonic phrase. Pre-generates BIP-44 gap limit addresses. */
+        /** Create a new wallet from a mnemonic phrase. Starts with only the primary address. */
         fun create(mnemonic: String, network: NetworkType): WalletManager {
             require(MnemonicHelper.validate(mnemonic)) { "Invalid mnemonic phrase" }
-            val w = WalletManager(mnemonic, network)
-            // Pre-generate addresses 1..19 (address 0 = primary, already exists)
-            for (i in 1 until GAP_LIMIT) {
-                w.generateAddress()
-            }
-            return w
+            return WalletManager(mnemonic, network)
         }
 
         /** Load wallet from an encrypted file. */

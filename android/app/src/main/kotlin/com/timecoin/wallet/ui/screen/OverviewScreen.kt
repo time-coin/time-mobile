@@ -9,6 +9,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.ExperimentalMaterialApi
+import androidx.compose.material.pullrefresh.PullRefreshIndicator
+import androidx.compose.material.pullrefresh.pullRefresh
+import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -32,18 +36,24 @@ import com.timecoin.wallet.service.WalletService
 import com.timecoin.wallet.ui.component.formatTime
 import com.timecoin.wallet.ui.component.formatSatoshis
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, ExperimentalFoundationApi::class, ExperimentalMaterialApi::class)
 @Composable
 fun OverviewScreen(service: WalletService) {
     val balance by service.balance.collectAsState()
     val utxoSynced by service.utxoSynced.collectAsState()
     val txSynced by service.transactionsSynced.collectAsState()
+    val hasMoreTransactions by service.hasMoreTransactions.collectAsState()
     val decimalPlaces by service.decimalPlaces.collectAsState()
     val transactions by service.transactions.collectAsState()
     val contacts by service.contacts.collectAsState()
     val isTestnet by service.isTestnet.collectAsState()
     val health by service.health.collectAsState()
     val wsConnected by service.wsConnected.collectAsState()
+    val isRefreshing by service.manualRefreshing.collectAsState()
+    val pullRefreshState = rememberPullRefreshState(
+        refreshing = isRefreshing,
+        onRefresh = { service.manualRefresh() },
+    )
 
     // Build address → label map from contacts
     val labelMap = remember(contacts) {
@@ -53,6 +63,7 @@ fun OverviewScreen(service: WalletService) {
     val recentTransactions = remember(transactions) {
         transactions.take(5)
     }
+
 
     // Pulse animation: triggers when balance increases
     var previousBalance by remember { mutableLongStateOf(balance.confirmed) }
@@ -106,6 +117,11 @@ fun OverviewScreen(service: WalletService) {
         },
     ) { innerPadding ->
 
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pullRefresh(pullRefreshState),
+    ) {
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -128,6 +144,38 @@ fun OverviewScreen(service: WalletService) {
                     )
                 }
                 Spacer(Modifier.height(8.dp))
+            }
+        }
+
+        // Sync warning banner
+        health?.let { h ->
+            if (h.isSyncing) {
+                item {
+                    val pct = (h.syncProgress * 100).toInt()
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFA500).copy(alpha = 0.15f)),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                Icons.Default.Sync,
+                                contentDescription = null,
+                                tint = Color(0xFFFFA500),
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Text(
+                                text = "Masternode syncing — $pct% complete. Balance may be incomplete.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFFFFA500),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
             }
         }
 
@@ -166,7 +214,7 @@ fun OverviewScreen(service: WalletService) {
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
                         )
-                        val synced = utxoSynced && txSynced
+                        val synced = utxoSynced && txSynced && health?.isSyncing != true
                         val statusColor = if (synced) Color(0xFF00C850) else Color(0xFFFFA500)
                         val statusText = if (synced) "Verified" else "Pending"
                         Card(
@@ -185,12 +233,19 @@ fun OverviewScreen(service: WalletService) {
                     if (balance.pending > 0) {
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            text = "Locked: ${formatSatoshis(balance.pending, decimalPlaces)} TIME",
+                            text = "Pending: ${formatSatoshis(balance.pending, decimalPlaces)} TIME",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
                         )
                     }
-                    if (balance.pending > 0) {
+                    if (balance.locked > 0) {
+                        Text(
+                            text = "Locked (Collateral): ${formatSatoshis(balance.locked, decimalPlaces)} TIME",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                        )
+                    }
+                    if (balance.pending > 0 || balance.locked > 0) {
                         Text(
                             text = "Total: ${formatSatoshis(balance.total, decimalPlaces)} TIME",
                             style = MaterialTheme.typography.bodySmall,
@@ -269,9 +324,16 @@ fun OverviewScreen(service: WalletService) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                Spacer(Modifier.width(16.dp))
+                Text(
+                    text = "Transactions: ${transactions.size}${if (hasMoreTransactions) "+" else ""}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             Spacer(Modifier.height(16.dp))
         }
+
 
         // Recent transactions header
         item {
@@ -319,6 +381,15 @@ fun OverviewScreen(service: WalletService) {
             }
         }
     }
+
+        PullRefreshIndicator(
+            refreshing = isRefreshing,
+            state = pullRefreshState,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = innerPadding.calculateTopPadding()),
+        )
+    } // end Box
 
     } // end Scaffold
 }
@@ -424,3 +495,4 @@ fun TransactionRow(
         )
     }
 }
+

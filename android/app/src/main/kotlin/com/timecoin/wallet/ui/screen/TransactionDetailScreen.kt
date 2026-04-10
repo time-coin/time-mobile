@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.timecoin.wallet.model.BlockRewardBreakdown
 import com.timecoin.wallet.model.TransactionRecord
 import com.timecoin.wallet.model.TransactionStatus
 import com.timecoin.wallet.service.Screen
@@ -31,6 +32,9 @@ fun TransactionDetailScreen(service: WalletService) {
     val tx by service.selectedTransaction.collectAsState()
     val contacts by service.contacts.collectAsState()
     val decimalPlaces by service.decimalPlaces.collectAsState()
+    val addresses by service.addresses.collectAsState()
+    val blockRewardBreakdown by service.blockRewardBreakdown.collectAsState()
+    val blockRewardBreakdownLoading by service.blockRewardBreakdownLoading.collectAsState()
     val context = LocalContext.current
     var memoText by remember(tx?.uniqueKey) { mutableStateOf(tx?.memo ?: "") }
     var editingMemo by remember { mutableStateOf(false) }
@@ -43,6 +47,18 @@ fun TransactionDetailScreen(service: WalletService) {
     if (transaction == null) {
         service.navigateTo(Screen.Overview)
         return
+    }
+
+    val isBlockReward = transaction.memo == "Block Reward" && transaction.blockHeight > 0
+
+    // Trigger block reward breakdown fetch when this is a block reward tx
+    LaunchedEffect(transaction.blockHeight, isBlockReward) {
+        if (isBlockReward) {
+            val current = blockRewardBreakdown
+            if (current == null || current.blockHeight != transaction.blockHeight) {
+                service.fetchBlockRewardBreakdown(transaction.blockHeight)
+            }
+        }
     }
 
     Scaffold(
@@ -115,6 +131,14 @@ fun TransactionDetailScreen(service: WalletService) {
                             MaterialTheme.colorScheme.onErrorContainer
                         else
                             MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                    Text(
+                        text = "%,d satoshis".format(transaction.amount),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = (if (transaction.isSend)
+                            MaterialTheme.colorScheme.onErrorContainer
+                        else
+                            MaterialTheme.colorScheme.onPrimaryContainer).copy(alpha = 0.7f),
                     )
 
                     // Status badge
@@ -281,6 +305,130 @@ fun TransactionDetailScreen(service: WalletService) {
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = if (memoText.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant
                                         else MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+                }
+            }
+            // Block reward breakdown
+            if (isBlockReward) {
+                Spacer(Modifier.height(16.dp))
+                BlockRewardBreakdownCard(
+                    breakdown = if (blockRewardBreakdown?.blockHeight == transaction.blockHeight)
+                        blockRewardBreakdown else null,
+                    loading = blockRewardBreakdownLoading,
+                    ownedAddresses = addresses.toSet(),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BlockRewardBreakdownCard(
+    breakdown: BlockRewardBreakdown?,
+    loading: Boolean,
+    ownedAddresses: Set<String>,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                text = "Block Reward Breakdown",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(8.dp))
+
+            if (loading) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "Loading reward breakdown…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else if (breakdown == null) {
+                Text(
+                    text = "Reward data unavailable",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                val myRewards = breakdown.rewards.filter { it.address in ownedAddresses }
+                val displayRewards = myRewards.ifEmpty { breakdown.rewards }
+                val showingAll = myRewards.isEmpty()
+
+                if (showingAll && breakdown.rewards.isEmpty()) {
+                    Text(
+                        text = "No masternode rewards in this block",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    if (showingAll) {
+                        Text(
+                            text = "None of your masternodes received a reward in this block",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    // Header row
+                    Row(Modifier.fillMaxWidth()) {
+                        Text(
+                            text = "Address",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "Reward",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    displayRewards.forEachIndexed { idx, entry ->
+                        if (idx > 0) {
+                            @Suppress("DEPRECATION")
+                            Divider(Modifier.padding(vertical = 4.dp))
+                        }
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = entry.address,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = formatSatoshis(entry.amount, 8) + " TIME",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Medium,
+                            )
+                        }
+                    }
+                    if (displayRewards.size > 1) {
+                        @Suppress("DEPRECATION")
+                        Divider(Modifier.padding(vertical = 4.dp))
+                        Row(Modifier.fillMaxWidth()) {
+                            Text(
+                                text = "Total",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                text = formatSatoshis(displayRewards.sumOf { it.amount }, 8) + " TIME",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
                             )
                         }
                     }

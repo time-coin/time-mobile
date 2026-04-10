@@ -20,6 +20,7 @@ data class Balance(
     val confirmed: Long = 0,
     val pending: Long = 0,
     val total: Long = 0,
+    val locked: Long = 0,   // masternode collateral locked as UTXOs
 )
 
 /** Transaction record for history display */
@@ -58,6 +59,8 @@ data class HealthStatus(
     val version: String,
     val blockHeight: Long,
     val peerCount: Int,
+    val isSyncing: Boolean = false,    // true during initial block download
+    val syncProgress: Double = 1.0,    // 0.0–1.0; 1.0 = fully synced
 )
 
 /** Instant finality status for a transaction */
@@ -78,6 +81,7 @@ data class PeerInfo(
     val pingMs: Long? = null,
     val blockHeight: Long? = null,
     val version: String? = null,
+    val isSyncing: Boolean = false,    // true if this node is still doing IBD
 )
 
 /** Individual transaction output (from gettransaction vout array) */
@@ -135,6 +139,18 @@ data class FeeSchedule(
 data class FeeTier(
     val upTo: Long,
     val rateBps: Long,
+)
+
+/** Per-address reward entry from a block reward transaction. */
+data class BlockRewardEntry(
+    val address: String,
+    val amount: Long,   // satoshis
+)
+
+/** All masternode rewards for a single block (from `getblock`). */
+data class BlockRewardBreakdown(
+    val blockHeight: Long,
+    val rewards: List<BlockRewardEntry>,
 )
 
 enum class PaymentRequestStatus {

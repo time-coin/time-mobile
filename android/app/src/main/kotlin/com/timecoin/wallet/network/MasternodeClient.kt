@@ -54,7 +54,8 @@ class MasternodeClient(
         val result = rpcCall("getbalance", buildJsonArray { add(address) })
         val confirmed = jsonToSatoshis(result.jsonObject["available"])
         val total = jsonToSatoshis(result.jsonObject["balance"])
-        return Balance(confirmed = confirmed, pending = total - confirmed, total = total)
+        val locked = jsonToSatoshis(result.jsonObject["locked"])
+        return Balance(confirmed = confirmed, pending = total - confirmed - locked, total = total, locked = locked)
     }
 
     /** Get combined balance across multiple addresses (batched to avoid oversized responses). */
@@ -63,17 +64,20 @@ class MasternodeClient(
             val result = rpcCall("getbalances", buildJsonArray { add(buildJsonArray { addresses.forEach { add(it) } }) })
             val confirmed = jsonToSatoshis(result.jsonObject["available"])
             val total = jsonToSatoshis(result.jsonObject["balance"])
-            return Balance(confirmed = confirmed, pending = total - confirmed, total = total)
+            val locked = jsonToSatoshis(result.jsonObject["locked"])
+            return Balance(confirmed = confirmed, pending = total - confirmed - locked, total = total, locked = locked)
         }
         // Batch: sum balances across chunks
         var confirmed = 0L
         var total = 0L
+        var locked = 0L
         for (chunk in addresses.chunked(BATCH_SIZE)) {
             val result = rpcCall("getbalances", buildJsonArray { add(buildJsonArray { chunk.forEach { add(it) } }) })
             confirmed += jsonToSatoshis(result.jsonObject["available"])
             total += jsonToSatoshis(result.jsonObject["balance"])
+            locked += jsonToSatoshis(result.jsonObject["locked"])
         }
-        return Balance(confirmed = confirmed, pending = total - confirmed, total = total)
+        return Balance(confirmed = confirmed, pending = total - confirmed - locked, total = total, locked = locked)
     }
 
     /** Get transaction history for a single address. */
@@ -83,10 +87,10 @@ class MasternodeClient(
     }
 
     /** Get transaction history across multiple addresses (batched). */
-    suspend fun getTransactionsMulti(addresses: List<String>, limit: Int = 50): List<TransactionRecord> {
+    suspend fun getTransactionsMulti(addresses: List<String>, limit: Int = 50, offset: Int = 0): List<TransactionRecord> {
         if (addresses.size <= BATCH_SIZE) {
             val result = rpcCall("listtransactionsmulti", buildJsonArray {
-                add(buildJsonArray { addresses.forEach { add(it) } }); add(limit)
+                add(buildJsonArray { addresses.forEach { add(it) } }); add(limit); add(offset)
             })
             return parseTransactionList(result)
         }
@@ -94,7 +98,7 @@ class MasternodeClient(
         val all = mutableListOf<TransactionRecord>()
         for (chunk in addresses.chunked(BATCH_SIZE)) {
             val result = rpcCall("listtransactionsmulti", buildJsonArray {
-                add(buildJsonArray { chunk.forEach { add(it) } }); add(limit)
+                add(buildJsonArray { chunk.forEach { add(it) } }); add(limit); add(offset)
             })
             all.addAll(parseTransactionList(result))
         }
@@ -126,7 +130,7 @@ class MasternodeClient(
 
     /** Broadcast a signed transaction (hex-encoded). */
     suspend fun broadcastTransaction(tx: Transaction): String {
-        val txJson = kotlinx.serialization.json.Json.encodeToJsonElement(Transaction.serializer(), tx)
+        val txJson = kotlinx.serialization.json.Json { encodeDefaults = true }.encodeToJsonElement(Transaction.serializer(), tx)
         val result = rpcCall("sendrawtransaction", buildJsonArray { add(txJson) })
         return result.jsonPrimitive.contentOrNull ?: result.toString().trim('"')
     }
@@ -143,6 +147,8 @@ class MasternodeClient(
         val height = result.jsonObject["blocks"]?.jsonPrimitive?.longOrNull
             ?: result.jsonObject["height"]?.jsonPrimitive?.longOrNull ?: 0
         val network = result.jsonObject["chain"]?.jsonPrimitive?.contentOrNull ?: "unknown"
+        val isSyncing = result.jsonObject["initialblockdownload"]?.jsonPrimitive?.booleanOrNull ?: false
+        val syncProgress = result.jsonObject["verificationprogress"]?.jsonPrimitive?.doubleOrNull ?: 1.0
 
         var peerCount = 0
         var version = ""
@@ -157,7 +163,46 @@ class MasternodeClient(
             version = "$network ($version)",
             blockHeight = height,
             peerCount = peerCount,
+            isSyncing = isSyncing,
+            syncProgress = syncProgress,
         )
+    }
+
+    /**
+     * Fetch the registered public key for an address.
+     * Returns the hex-encoded pubkey, or null if none registered yet.
+     */
+    suspend fun getAddressPubkey(address: String): String? = try {
+        val result = rpcCall("getaddresspubkey", buildJsonArray { add(address) })
+        result.jsonPrimitive.contentOrNull?.takeIf { it.isNotBlank() }
+    } catch (_: Exception) { null }
+
+    /**
+     * Register the Ed25519 public key for an address so the masternode can
+     * encrypt memos destined for that address before the transaction arrives.
+     */
+    suspend fun registerAddressPubkey(address: String, pubkeyHex: String): Boolean = try {
+        rpcCall("registeraddresspubkey", buildJsonArray { add(address); add(pubkeyHex) })
+        true
+    } catch (e: Exception) {
+        Log.w("MasternodeClient", "registerAddressPubkey failed for $address: ${e.message}")
+        false
+    }
+
+    /**
+     * Fetch all masternode rewards for a given block height.
+     * Calls `getblock` and parses the `masternode_rewards` array.
+     */
+    suspend fun getBlockRewardBreakdown(height: Long): BlockRewardBreakdown {
+        val result = rpcCall("getblock", buildJsonArray { add(height) })
+        val rewards = result.jsonObject["masternode_rewards"]
+            ?.jsonArray
+            ?.mapNotNull { r ->
+                val addr = r.jsonObject["address"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                val amount = r.jsonObject["amount"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null
+                BlockRewardEntry(addr, amount)
+            } ?: emptyList()
+        return BlockRewardBreakdown(blockHeight = height, rewards = rewards)
     }
 
     /** Get current block height. */

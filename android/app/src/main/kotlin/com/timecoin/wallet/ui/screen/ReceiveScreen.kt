@@ -37,6 +37,7 @@ import com.timecoin.wallet.ui.component.formatSatoshis
 @Composable
 fun ReceiveScreen(service: WalletService) {
     val addresses by service.addresses.collectAsState()
+    val discoveringAddresses by service.discoveringAddresses.collectAsState()
     val utxos by service.utxos.collectAsState()
     val contacts by service.contacts.collectAsState()
     val decimalPlaces by service.decimalPlaces.collectAsState()
@@ -47,6 +48,8 @@ fun ReceiveScreen(service: WalletService) {
     var editingIndex by remember { mutableStateOf(-1) }
     var editLabelText by remember { mutableStateOf("") }
     var originalLabelText by remember { mutableStateOf("") }
+
+    var addressToDelete by remember { mutableStateOf<String?>(null) }
 
     val currentAddress = addresses.getOrNull(selectedIndex) ?: ""
 
@@ -134,11 +137,17 @@ fun ReceiveScreen(service: WalletService) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = "Your Addresses (${addresses.size})",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "Your Addresses (${addresses.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    if (discoveringAddresses) {
+                        Spacer(Modifier.width(8.dp))
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                    }
+                }
                 OutlinedButton(
                     onClick = {
                         service.generateAddress()
@@ -282,6 +291,19 @@ fun ReceiveScreen(service: WalletService) {
                                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
                                     }
+                                    if (index > 0 && addrBal == 0L) {
+                                        IconButton(
+                                            onClick = { addressToDelete = address },
+                                            modifier = Modifier.size(32.dp),
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Delete,
+                                                contentDescription = "Remove address",
+                                                modifier = Modifier.size(16.dp),
+                                                tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f),
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -290,6 +312,26 @@ fun ReceiveScreen(service: WalletService) {
                 }
             }
         }
+    }
+
+    addressToDelete?.let { addr ->
+        AlertDialog(
+            onDismissRequest = { addressToDelete = null },
+            title = { Text("Remove address?") },
+            text = { Text("This address will be hidden from your list. It will reappear automatically if it receives funds.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (selectedIndex >= addresses.indexOf(addr)) selectedIndex = 0
+                        service.deleteOwnedAddress(addr)
+                        addressToDelete = null
+                    },
+                ) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { addressToDelete = null }) { Text("Cancel") }
+            },
+        )
     }
 }
 

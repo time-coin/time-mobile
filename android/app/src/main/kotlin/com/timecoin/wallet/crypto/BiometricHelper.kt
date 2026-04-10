@@ -50,9 +50,17 @@ object BiometricHelper {
      */
     fun enroll(activity: FragmentActivity, pin: String, onResult: (Boolean) -> Unit) {
         try {
-            val key = getOrCreateKey()
+            var key = getOrCreateKey()
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, key)
+            try {
+                cipher.init(Cipher.ENCRYPT_MODE, key)
+            } catch (e: java.security.InvalidKeyException) {
+                // Key was permanently invalidated (new biometrics enrolled, etc.) — recreate it
+                Log.w(TAG, "Keystore key invalidated, recreating", e)
+                unenroll(activity)
+                key = getOrCreateKey()
+                cipher.init(Cipher.ENCRYPT_MODE, key)
+            }
 
             val prompt = BiometricPrompt(
                 activity,

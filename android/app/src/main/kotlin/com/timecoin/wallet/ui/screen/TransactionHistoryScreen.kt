@@ -44,11 +44,9 @@ fun TransactionHistoryScreen(service: WalletService) {
             transactions.filter { tx ->
                 tx.address.contains(q, ignoreCase = true) ||
                     tx.txid.contains(q, ignoreCase = true) ||
-                    // Search by contact name / label
+                    tx.memo.contains(q, ignoreCase = true) ||
                     labelMap[tx.address]?.contains(q, ignoreCase = true) == true ||
-                    // Search by amount (formatted string)
                     formatSatoshis(tx.amount, decimalPlaces).contains(q) ||
-                    // Search by type
                     (q.equals("fee", ignoreCase = true) && tx.isFee) ||
                     (q.equals("sent", ignoreCase = true) && tx.isSend && !tx.isFee) ||
                     (q.equals("send", ignoreCase = true) && tx.isSend && !tx.isFee) ||

@@ -20,6 +20,7 @@ import com.timecoin.wallet.ui.component.AppHamburgerMenu
 @Composable
 fun ConnectionsScreen(service: WalletService) {
     val peers by service.peers.collectAsState()
+    val peerInfos by service.peerInfos.collectAsState()
     val connectedPeer by service.connectedPeer.collectAsState()
     val health by service.health.collectAsState()
     val wsConnected by service.wsConnected.collectAsState()
@@ -148,6 +149,7 @@ fun ConnectionsScreen(service: WalletService) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(8.dp)) {
                     peers.forEachIndexed { index, peer ->
+                        val info = peerInfos.find { it.endpoint == peer }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -171,7 +173,23 @@ fun ConnectionsScreen(service: WalletService) {
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontWeight = if (peer == connectedPeer) FontWeight.Medium
                                     else FontWeight.Normal,
+                                modifier = Modifier.weight(1f),
                             )
+                            if (info?.isSyncing == true) {
+                                Spacer(Modifier.width(8.dp))
+                                Card(
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = Color(0xFFFFA500).copy(alpha = 0.15f)
+                                    ),
+                                ) {
+                                    Text(
+                                        text = "Syncing",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color(0xFFFFA500),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    )
+                                }
+                            }
                         }
                         if (index < peers.lastIndex) {
                             @Suppress("DEPRECATION")

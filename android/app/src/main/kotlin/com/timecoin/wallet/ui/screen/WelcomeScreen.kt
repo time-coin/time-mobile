@@ -25,7 +25,9 @@ fun WelcomeScreen(service: WalletService) {
         Image(
             painter = painterResource(id = R.drawable.time_logo),
             contentDescription = "TIME Coin Logo",
-            modifier = Modifier.size(128.dp),
+            modifier = Modifier
+                .size(96.dp)
+                .padding(4.dp),
         )
         Spacer(Modifier.height(16.dp))
         Text(
@@ -42,14 +44,20 @@ fun WelcomeScreen(service: WalletService) {
         Spacer(Modifier.height(48.dp))
 
         Button(
-            onClick = { service.navigateTo(Screen.NetworkSelect) },
+            onClick = {
+                service.setRestoreMode(false)
+                service.navigateTo(Screen.NetworkSelect)
+            },
             modifier = Modifier.fillMaxWidth().height(56.dp),
         ) {
             Text("Create New Wallet", fontSize = 18.sp)
         }
         Spacer(Modifier.height(16.dp))
         OutlinedButton(
-            onClick = { service.navigateTo(Screen.NetworkSelect) },
+            onClick = {
+                service.setRestoreMode(true)
+                service.navigateTo(Screen.NetworkSelect)
+            },
             modifier = Modifier.fillMaxWidth().height(56.dp),
         ) {
             Text("Restore from Mnemonic", fontSize = 18.sp)

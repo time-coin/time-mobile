@@ -28,5 +28,9 @@
 -keep class dagger.hilt.** { *; }
 -dontwarn dagger.hilt.**
 
+# Keep ZXing (barcode/QR scanning) — ProGuard strips these without this rule
+-keep class com.google.zxing.** { *; }
+-dontwarn com.google.zxing.**
+
 # Suppress missing SLF4J static binder (not needed on Android)
 -dontwarn org.slf4j.impl.StaticLoggerBinder

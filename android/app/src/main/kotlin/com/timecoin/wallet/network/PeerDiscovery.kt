@@ -177,6 +177,7 @@ object PeerDiscovery {
         var blockHeight: Long? = null
         var version: String? = null
         var isHealthy = false
+        var isSyncing = false
         var workingUrl = url
 
         for (scheme in listOf("https", "http")) {
@@ -188,6 +189,7 @@ object PeerDiscovery {
                 blockHeight = health.blockHeight
                 version = health.version
                 isHealthy = true
+                isSyncing = health.isSyncing
                 workingUrl = tryUrl
                 break
             } catch (e: Exception) {
@@ -208,6 +210,7 @@ object PeerDiscovery {
             pingMs = pingMs,
             blockHeight = blockHeight,
             version = version,
+            isSyncing = isSyncing,
         )
     }
 
@@ -263,10 +266,11 @@ object PeerDiscovery {
         }
     }
 
-    /** Sort peers: healthy first → WS-capable → lowest ping. */
+    /** Sort peers: healthy first → not syncing → WS-capable → lowest ping. */
     private fun rankPeers(peers: List<PeerInfo>): List<PeerInfo> {
         return peers.sortedWith(
             compareByDescending<PeerInfo> { it.isHealthy }
+                .thenBy { it.isSyncing }  // fully-synced peers before IBD peers
                 .thenByDescending { it.wsAvailable }
                 .thenBy { it.pingMs ?: Long.MAX_VALUE }
         )

@@ -18,9 +18,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.fragment.app.FragmentActivity
 import com.timecoin.wallet.crypto.Address
-import com.timecoin.wallet.crypto.BiometricHelper
 import com.timecoin.wallet.crypto.NetworkType
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
@@ -32,6 +30,7 @@ import java.util.*
 @Composable
 fun SettingsScreen(service: WalletService) {
     val isTestnet by service.isTestnet.collectAsState()
+    val notificationsEnabled by service.notificationsEnabled.collectAsState()
     val health by service.health.collectAsState()
     val wsConnected by service.wsConnected.collectAsState()
     val decimalPlaces by service.decimalPlaces.collectAsState()
@@ -39,6 +38,8 @@ fun SettingsScreen(service: WalletService) {
     val peers by service.peers.collectAsState()
     val connectedPeer by service.connectedPeer.collectAsState()
     val reindexing by service.reindexing.collectAsState()
+    val consolidating by service.consolidating.collectAsState()
+    val consolidationStatus by service.consolidationStatus.collectAsState()
     val backups by service.backups.collectAsState()
     val context = LocalContext.current
 
@@ -84,6 +85,34 @@ fun SettingsScreen(service: WalletService) {
                                 label = { Text("$places") },
                             )
                         }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(24.dp))
+
+            // ── Notifications ──
+            Text("Notifications", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Transaction Alerts", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Sound and notification when TIME is received",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = notificationsEnabled,
+                            onCheckedChange = { service.setNotificationsEnabled(it) },
+                        )
                     }
                 }
             }
@@ -223,9 +252,6 @@ fun SettingsScreen(service: WalletService) {
             var showDeleteConfirm by remember { mutableStateOf(false) }
             var showReindexConfirm by remember { mutableStateOf(false) }
 
-            val biometricAvailable = remember { BiometricHelper.isAvailable(context) }
-            var biometricEnrolled by remember { mutableStateOf(BiometricHelper.isEnrolled(context)) }
-
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     // Change PIN
@@ -236,51 +262,6 @@ fun SettingsScreen(service: WalletService) {
                         Icon(Icons.Default.Pin, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp))
                         Text("Change PIN")
-                    }
-
-                    // Biometric unlock toggle (only shown if device supports it)
-                    if (biometricAvailable) {
-                        Spacer(Modifier.height(8.dp))
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Default.Fingerprint,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp),
-                                    tint = MaterialTheme.colorScheme.onSurface,
-                                )
-                                Spacer(Modifier.width(12.dp))
-                                Column {
-                                    Text("Biometric Unlock", style = MaterialTheme.typography.bodyMedium)
-                                    Text(
-                                        if (biometricEnrolled) "Fingerprint unlock enabled" else "Use fingerprint to unlock",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                            Switch(
-                                checked = biometricEnrolled,
-                                onCheckedChange = { enable ->
-                                    if (enable) {
-                                        val activity = context as? FragmentActivity
-                                        if (activity != null) {
-                                            // Need the current PIN — prompt for it first via WalletService
-                                            service.enrollBiometric(activity) { success ->
-                                                if (success) biometricEnrolled = true
-                                            }
-                                        }
-                                    } else {
-                                        BiometricHelper.unenroll(context)
-                                        biometricEnrolled = false
-                                    }
-                                },
-                            )
-                        }
                     }
 
                     Spacer(Modifier.height(8.dp))
@@ -332,6 +313,79 @@ fun SettingsScreen(service: WalletService) {
                         Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp))
                         Text("Create Backup Now")
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    // Consolidate UTXOs
+                    var showConsolidateConfirm by remember { mutableStateOf(false) }
+                    if (consolidationStatus != null) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            ),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp).fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                if (consolidating) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                    Spacer(Modifier.width(8.dp))
+                                }
+                                Text(
+                                    consolidationStatus ?: "",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (consolidating) {
+                                    Spacer(Modifier.width(8.dp))
+                                    TextButton(
+                                        onClick = { service.cancelConsolidation() },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                    ) {
+                                        Text("Cancel", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    OutlinedButton(
+                        onClick = { showConsolidateConfirm = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !consolidating && !reindexing,
+                    ) {
+                        Icon(Icons.Default.CompareArrows, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Consolidate UTXOs")
+                    }
+                    if (showConsolidateConfirm) {
+                        AlertDialog(
+                            onDismissRequest = { showConsolidateConfirm = false },
+                            title = { Text("Consolidate UTXOs?") },
+                            text = {
+                                Text(
+                                    "This merges multiple small UTXOs per address into a single UTXO " +
+                                        "by sending them back to the same address. " +
+                                        "Network fees apply per batch. Useful when you have many small block rewards.",
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    showConsolidateConfirm = false
+                                    service.consolidateUtxos()
+                                }) {
+                                    Text("Consolidate")
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showConsolidateConfirm = false }) {
+                                    Text("Cancel")
+                                }
+                            },
+                        )
                     }
 
                     Spacer(Modifier.height(8.dp))
@@ -421,7 +475,10 @@ fun SettingsScreen(service: WalletService) {
             val appVersion = remember {
                 try {
                     val info = context.packageManager.getPackageInfo(context.packageName, 0)
-                    info.versionName ?: "—"
+                    val name = info.versionName ?: "—"
+                    @Suppress("DEPRECATION")
+                    val code = info.versionCode
+                    "$name ($code)"
                 } catch (_: Exception) { "—" }
             }
             Text("About", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)

@@ -2,6 +2,7 @@ package com.timecoin.wallet.model
 
 import com.timecoin.wallet.crypto.Address
 import com.timecoin.wallet.crypto.Keypair
+import com.timecoin.wallet.crypto.UByteArraySerializer
 import com.timecoin.wallet.crypto.toHexString
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -18,6 +19,7 @@ import java.security.MessageDigest
 /** Outpoint referencing a previous transaction output */
 @Serializable
 data class OutPoint(
+    @kotlinx.serialization.Serializable(with = UByteArraySerializer::class)
     val txid: ByteArray,
     val vout: Int,
 ) {
@@ -36,7 +38,9 @@ data class OutPoint(
 @Serializable
 data class TxInput(
     @SerialName("previous_output") val previousOutput: OutPoint,
-    @SerialName("script_sig") var scriptSig: ByteArray = ByteArray(0),
+    @SerialName("script_sig")
+    @kotlinx.serialization.Serializable(with = UByteArraySerializer::class)
+    var scriptSig: ByteArray = ByteArray(0),
     val sequence: Long = 0xFFFFFFFFL,
 ) {
     companion object {
@@ -65,7 +69,9 @@ data class TxInput(
 @Serializable
 data class TxOutput(
     val value: Long,
-    @SerialName("script_pubkey") val scriptPubkey: ByteArray,
+    @SerialName("script_pubkey")
+    @kotlinx.serialization.Serializable(with = UByteArraySerializer::class)
+    val scriptPubkey: ByteArray,
 ) {
     companion object {
         fun new(amount: Long, address: Address) = TxOutput(
@@ -108,7 +114,7 @@ data class Transaction(
 
     /** SHA-256 of JSON serialization (matches masternode txid). */
     fun hash(): ByteArray {
-        val json = Json.encodeToString(serializer(), this)
+        val json = Json { encodeDefaults = true }.encodeToString(serializer(), this)
         val sha = MessageDigest.getInstance("SHA-256")
         return sha.digest(json.toByteArray())
     }

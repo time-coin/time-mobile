@@ -1,13 +1,21 @@
 package com.timecoin.wallet.ui.screen
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.timecoin.wallet.model.FeeSchedule
 import com.timecoin.wallet.model.PaymentRequestStatus
@@ -29,6 +37,7 @@ fun PaymentRequestReviewScreen(service: WalletService) {
         LaunchedEffect(Unit) { service.navigateTo(Screen.Overview) }
         return
     }
+    val context = LocalContext.current
 
     val fee = remember(req.amountSats) { FeeSchedule().calculateFee(req.amountSats) }
     val total = req.amountSats + fee
@@ -143,13 +152,60 @@ fun PaymentRequestReviewScreen(service: WalletService) {
                         PaymentRequestStatus.Accepted -> "Accepted — payment in progress."
                         else -> ""
                     }
-                    Text(
-                        label,
-                        modifier = Modifier.padding(12.dp),
-                        color = statusColor,
-                        fontWeight = FontWeight.Medium,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    Column(Modifier.padding(12.dp)) {
+                        Text(
+                            label,
+                            color = statusColor,
+                            fontWeight = FontWeight.Medium,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        if (req.status == PaymentRequestStatus.Paid && req.paidTxid.isNotBlank()) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                "Transaction ID",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = statusColor.copy(alpha = 0.7f),
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = req.paidTxid,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = statusColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                IconButton(
+                                    onClick = {
+                                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        cm.setPrimaryClip(ClipData.newPlainText("txid", req.paidTxid))
+                                        Toast.makeText(context, "Transaction ID copied", Toast.LENGTH_SHORT).show()
+                                    },
+                                    modifier = Modifier.size(28.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Default.ContentCopy,
+                                        contentDescription = "Copy txid",
+                                        modifier = Modifier.size(14.dp),
+                                        tint = statusColor.copy(alpha = 0.7f),
+                                    )
+                                }
+                            }
+                            TextButton(
+                                onClick = { service.showTransactionByTxid(req.paidTxid) },
+                                contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
+                            ) {
+                                Icon(
+                                    Icons.Default.OpenInNew,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(12.dp),
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text("View transaction", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
                 }
             }
 

@@ -81,16 +81,16 @@ interface ContactDao {
 
 @Dao
 interface TransactionDao {
-    @Query("SELECT * FROM transactions ORDER BY timestamp DESC")
+    @Query("SELECT * FROM transactions ORDER BY timestamp DESC, CASE WHEN isFee = 1 THEN 1 WHEN isSend = 1 THEN 2 ELSE 0 END ASC")
     suspend fun getAll(): List<TransactionEntity>
 
-    @Query("SELECT * FROM transactions ORDER BY timestamp DESC LIMIT :limit")
+    @Query("SELECT * FROM transactions ORDER BY timestamp DESC, CASE WHEN isFee = 1 THEN 1 WHEN isSend = 1 THEN 2 ELSE 0 END ASC LIMIT :limit")
     suspend fun getRecent(limit: Int = 50): List<TransactionEntity>
 
     @Query("SELECT COUNT(*) FROM transactions")
     suspend fun count(): Int
 
-    @Query("SELECT * FROM transactions WHERE address LIKE '%' || :query || '%' OR txid LIKE '%' || :query || '%' ORDER BY timestamp DESC")
+    @Query("SELECT * FROM transactions WHERE address LIKE '%' || :query || '%' OR txid LIKE '%' || :query || '%' ORDER BY timestamp DESC, CASE WHEN isFee = 1 THEN 1 WHEN isSend = 1 THEN 2 ELSE 0 END ASC")
     suspend fun search(query: String): List<TransactionEntity>
 
     @Upsert

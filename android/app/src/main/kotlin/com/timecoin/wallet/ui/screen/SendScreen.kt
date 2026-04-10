@@ -36,6 +36,8 @@ fun SendScreen(
     val isTestnet by service.isTestnet.collectAsState()
     val loading by service.loading.collectAsState()
     val contacts by service.contacts.collectAsState()
+    val addresses by service.addresses.collectAsState()
+    val utxos by service.utxos.collectAsState()
     val paymentRequests by service.paymentRequests.collectAsState()
     val pendingIncoming = remember(paymentRequests) {
         paymentRequests.filter { !it.isOutgoing && it.status == PaymentRequestStatus.Pending }
@@ -54,6 +56,26 @@ fun SendScreen(
     var recipientEmail by remember { mutableStateOf("") }
     var recipientPhone by remember { mutableStateOf("") }
     var showOptionalFields by remember { mutableStateOf(false) }
+    var fromAddressIdx by remember { mutableStateOf(0) }  // 0 = any/all, 1+ = addresses[idx-1]
+
+    // Address options for "From" dropdown: first entry = "Any address" (all UTXOs)
+    val fromAddressOptions = remember(addresses, contacts, utxos) {
+        val contactMap = contacts.associate { it.address to it.label }
+        val hasUtxos = utxos.map { it.address }.toSet()
+        // Only show addresses that have at least one UTXO
+        val fundedAddresses = addresses.filterIndexed { _, addr -> addr in hasUtxos }
+        if (fundedAddresses.size <= 1) emptyList()  // hide dropdown when only one funded address
+        else fundedAddresses.mapIndexed { idx, addr ->
+            val label = contactMap[addr]?.takeIf { it.isNotBlank() } ?: "Address ${idx + 1}"
+            Pair(addr, label)
+        }
+    }
+    val selectedFromAddress = if (fromAddressIdx > 0 && fromAddressIdx <= fromAddressOptions.size)
+        fromAddressOptions[fromAddressIdx - 1].first else null
+    val availableFromBalance = remember(selectedFromAddress, utxos) {
+        if (selectedFromAddress == null) null
+        else utxos.filter { it.spendable && it.address == selectedFromAddress }.sumOf { it.amount }
+    }
 
     // Add contact form fields
     var newContactName by remember { mutableStateOf("") }
@@ -157,7 +179,7 @@ fun SendScreen(
                 amountStr = amountStr,
                 onAmountChange = { amountStr = it },
                 amountSats = amountSats,
-                balance = balance.confirmed,
+                balance = availableFromBalance ?: balance.confirmed,
                 recipientEmail = recipientEmail,
                 onRecipientEmailChange = { recipientEmail = it },
                 recipientPhone = recipientPhone,
@@ -166,6 +188,9 @@ fun SendScreen(
                 onToggleOptional = { showOptionalFields = !showOptionalFields },
                 loading = loading,
                 onScanQr = onScanQr,
+                fromAddressOptions = fromAddressOptions,
+                fromAddressIdx = fromAddressIdx,
+                onFromAddressChange = { fromAddressIdx = it },
                 onSend = {
                     val isOwned = contacts.any { it.address == toAddress && it.isOwned }
                     if (!isOwned) {
@@ -176,7 +201,7 @@ fun SendScreen(
                             phone = recipientPhone.trim(),
                         )
                     }
-                    service.sendTransaction(toAddress, amountSats)
+                    service.sendTransaction(toAddress, amountSats, fromAddress = selectedFromAddress)
                 },
             )
         } else {
@@ -464,6 +489,7 @@ private fun ContactRow(
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 private fun SendFormContent(
     modifier: Modifier = Modifier,
     recipientName: String,
@@ -483,15 +509,55 @@ private fun SendFormContent(
     onToggleOptional: () -> Unit,
     loading: Boolean,
     onScanQr: () -> Unit,
+    fromAddressOptions: List<Pair<String, String>>,
+    fromAddressIdx: Int,
+    onFromAddressChange: (Int) -> Unit,
     onSend: () -> Unit,
 ) {
     val clipboardManager = LocalClipboardManager.current
+    var fromDropdownExpanded by remember { mutableStateOf(false) }
     Column(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
     ) {
+        // "Send From" address selector (only shown when multiple funded addresses exist)
+        if (fromAddressOptions.isNotEmpty()) {
+            val selectedLabel = if (fromAddressIdx == 0) "Any address"
+                else fromAddressOptions.getOrNull(fromAddressIdx - 1)?.second ?: "Any address"
+            ExposedDropdownMenuBox(
+                expanded = fromDropdownExpanded,
+                onExpandedChange = { fromDropdownExpanded = it },
+            ) {
+                OutlinedTextField(
+                    value = selectedLabel,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Send From") },
+                    modifier = Modifier.fillMaxWidth().menuAnchor(),
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = fromDropdownExpanded) },
+                    leadingIcon = { Icon(Icons.Default.AccountBalance, null, modifier = Modifier.size(20.dp)) },
+                )
+                ExposedDropdownMenu(
+                    expanded = fromDropdownExpanded,
+                    onDismissRequest = { fromDropdownExpanded = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Any address") },
+                        onClick = { onFromAddressChange(0); fromDropdownExpanded = false },
+                    )
+                    fromAddressOptions.forEachIndexed { idx, (_, label) ->
+                        DropdownMenuItem(
+                            text = { Text(label) },
+                            onClick = { onFromAddressChange(idx + 1); fromDropdownExpanded = false },
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+
         // Recipient name
         OutlinedTextField(
             value = recipientName,
