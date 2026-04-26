@@ -91,6 +91,18 @@ data class TxOutputInfo(
     val address: String,
 )
 
+/**
+ * Full detail returned by gettransaction.
+ * [finalized] is true when the transaction has achieved TimeVote consensus (67% stake
+ * threshold or 51% after the 30-second liveness fallback) but has not yet been archived
+ * in a block. In TIME Coin, finalized == confirmed; block inclusion is archival only.
+ */
+data class TxDetail(
+    val fee: Long,
+    val outputs: List<TxOutputInfo>,
+    val finalized: Boolean,
+)
+
 /** Contact / address book entry */
 @Serializable
 data class Contact(

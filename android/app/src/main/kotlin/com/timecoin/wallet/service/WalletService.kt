@@ -533,7 +533,7 @@ class WalletService @Inject constructor(
     private fun connectToNetwork() {
         networkJob?.cancel()
         discoveryJob?.cancel()
-        networkJob = scope.launch {
+        networkJob = scope.launch networkJob@{
             val session = networkSession
             try {
                 val isTestnet = _isTestnet.value
@@ -565,7 +565,7 @@ class WalletService @Inject constructor(
                                 }
                                 _peers.value = rankedPeers.map { it.endpoint }
                             }
-                            return@launch
+                            return@networkJob
                         }
                     } catch (e: Exception) {
                         Log.w(TAG, "connectToNetwork: cached peer $lastPeer unavailable, starting full discovery")
@@ -583,11 +583,11 @@ class WalletService @Inject constructor(
                 _peerInfos.value = rankedPeers
                 _peers.value = rankedPeers.map { it.endpoint }
 
-                if (session != networkSession) return@launch  // switched network while discovering
+                if (session != networkSession) return@networkJob  // switched network while discovering
 
                 if (rankedPeers.isEmpty()) {
                     _error.value = "No masternodes found"
-                    return@launch
+                    return@networkJob
                 }
 
                 Log.d(TAG, "Ranked ${rankedPeers.size} peers, " +
@@ -597,17 +597,17 @@ class WalletService @Inject constructor(
                 val healthyPeers = rankedPeers.filter { it.isHealthy }
                 if (healthyPeers.isEmpty()) {
                     _error.value = "No healthy masternodes found"
-                    return@launch
+                    return@networkJob
                 }
 
                 for (peer in healthyPeers) {
-                    if (session != networkSession) return@launch  // switched network mid-connect
+                    if (session != networkSession) return@networkJob  // switched network mid-connect
                     if (tryConnect(peer.endpoint, rpcCreds)) {
                         // Mark the active peer
                         _peerInfos.value = rankedPeers.map {
                             it.copy(isActive = it.endpoint == peer.endpoint)
                         }
-                        return@launch
+                        return@networkJob
                     }
                 }
 
@@ -932,6 +932,35 @@ class WalletService @Inject constructor(
 
         val processed = expandAndProcess(rawTxs, w, client)
         cacheTransactionsToDb(processed)
+
+        // Purge ghost transactions: pending txids in the DB that the node no longer knows about.
+        // This covers broadcast failures, dropped mempool entries, and censorship attempts.
+        // Transactions confirmed via TimeVote (finalized=true) are upgraded to "approved" —
+        // in TIME Coin, TimeVote consensus IS confirmation; block archival is optional/eventual.
+        val freshTxids = rawTxs.map { it.txid }.toSet()
+        val pendingTxids = transactionDao.getPendingTxids()
+        val possiblyGhost = pendingTxids.filter { it !in freshTxids }
+        for (txid in possiblyGhost) {
+            try {
+                val detail = client.getTransactionDetail(txid)
+                if (detail.finalized) {
+                    // TimeVote consensus reached — this is confirmed in TIME Coin protocol
+                    Log.i(TAG, "Tx ${txid.take(12)}… is TimeVote-finalized — marking approved")
+                    transactionDao.updateStatusByTxid(txid, "approved")
+                }
+                // Otherwise still pending on node — leave it
+            } catch (e: MasternodeException) {
+                if (e.message?.contains("RPC error -5") == true ||
+                    e.message?.contains("No information available") == true) {
+                    Log.w(TAG, "Ghost tx ${txid.take(12)}… not found on node — removing")
+                    transactionDao.deleteByTxid(txid)
+                }
+                // Other errors (network timeout etc.) — leave pending, try again next refresh
+            } catch (_: Exception) {
+                // Network issue — leave pending
+            }
+        }
+
         // Reload from DB so any background-synced history is preserved in the display list
         _transactions.value = transactionDao.getAll().map { it.toTransactionRecord() }
         if (markSynced) _transactionsSynced.value = true

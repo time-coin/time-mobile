@@ -102,6 +102,15 @@ interface TransactionDao {
     @Query("UPDATE transactions SET memo = :memo WHERE txid = :txid AND vout = :vout AND isSend = :isSend AND isFee = :isFee")
     suspend fun updateMemo(txid: String, vout: Int, isSend: Boolean, isFee: Boolean, memo: String)
 
+    @Query("SELECT DISTINCT txid FROM transactions WHERE status = 'pending'")
+    suspend fun getPendingTxids(): List<String>
+
+    @Query("UPDATE transactions SET status = :status WHERE txid = :txid")
+    suspend fun updateStatusByTxid(txid: String, status: String)
+
+    @Query("DELETE FROM transactions WHERE txid = :txid")
+    suspend fun deleteByTxid(txid: String)
+
     @Query("DELETE FROM transactions")
     suspend fun deleteAll()
 }

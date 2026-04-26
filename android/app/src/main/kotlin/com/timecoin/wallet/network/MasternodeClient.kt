@@ -237,10 +237,11 @@ class MasternodeClient(
      * Used to expand "consolidate" (self-send) entries into individual outputs
      * so processTransactions can create proper send + receive + fee entries.
      */
-    suspend fun getTransactionDetail(txid: String): Pair<Long, List<TxOutputInfo>> {
+    suspend fun getTransactionDetail(txid: String): TxDetail {
         val result = rpcCall("gettransaction", buildJsonArray { add(txid) })
         val obj = result.jsonObject
         val fee = jsonToSatoshisAbs(obj["fee"])
+        val finalized = obj["finalized"]?.jsonPrimitive?.booleanOrNull ?: false
         val outputs = obj["vout"]?.jsonArray?.mapNotNull { vout ->
             val vo = vout.jsonObject
             val value = jsonToSatoshisAbs(vo["value"])
@@ -249,7 +250,7 @@ class MasternodeClient(
                 ?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
             TxOutputInfo(value = value, index = n, address = addr)
         } ?: emptyList()
-        return Pair(fee, outputs)
+        return TxDetail(fee = fee, outputs = outputs, finalized = finalized)
     }
 
     /**
