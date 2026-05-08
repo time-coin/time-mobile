@@ -207,7 +207,6 @@ object PeerDiscovery {
             try {
                 val client = MasternodeClient(tryUrl, credentials)
                 val health = withTimeout(HEALTH_TIMEOUT_MS) { client.healthCheck() }
-                client.close()
                 blockHeight = health.blockHeight
                 version = health.version
                 isSyncing = health.isSyncing
@@ -228,6 +227,7 @@ object PeerDiscovery {
                     }
                 }
 
+                client.close()
                 isHealthy = true
                 break
             } catch (e: Exception) {
