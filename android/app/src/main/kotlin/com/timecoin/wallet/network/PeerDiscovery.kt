@@ -37,6 +37,20 @@ object PeerDiscovery {
     private const val MAX_BLOCK_LAG = 3
     private const val MAX_PEERS = 8
 
+    // Peers that failed genesis hash verification — excluded from cache and gossip.
+    private val blacklist = mutableSetOf<String>()
+
+    fun blacklistPeer(endpoint: String) {
+        val host = endpoint.removePrefix("https://").removePrefix("http://").substringBefore(':')
+        blacklist.add(host)
+        Log.w(TAG, "Blacklisted peer $host (wrong chain)")
+    }
+
+    fun clearPeerCache(isTestnet: Boolean, cacheDir: File) {
+        File(cacheDir, cacheFilename(isTestnet)).delete()
+        Log.i(TAG, "Peer cache cleared (testnet=$isTestnet)")
+    }
+
     // ── Public API ──
 
     /**
@@ -64,7 +78,11 @@ object PeerDiscovery {
                 loadCache(isTestnet, cacheDir)?.let { candidates.addAll(it) }
             }
         }
-        Log.d(TAG, "Collected ${candidates.size} candidate peers")
+        candidates.removeAll { ep ->
+            val host = ep.removePrefix("https://").removePrefix("http://").substringBefore(':')
+            blacklist.contains(host)
+        }
+        Log.d(TAG, "Collected ${candidates.size} candidate peers (${blacklist.size} blacklisted)")
 
         if (candidates.isEmpty()) return@coroutineScope emptyList()
 
@@ -93,6 +111,7 @@ object PeerDiscovery {
                 for (addr in peerAddresses) {
                     // addr is "IP:P2P_PORT" — extract IP, build RPC endpoint
                     val ip = addr.substringBefore(':')
+                    if (blacklist.contains(ip)) continue
                     val ep = "https://$ip:$rpcPort"
                     if (ep !in knownEndpoints) gossipEndpoints.add(ep)
                 }

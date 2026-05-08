@@ -110,6 +110,12 @@ enum class NetworkType {
         Mainnet -> 24001
         Testnet -> 24101
     }
+
+    /** Canonical genesis block hash — matches constants.rs in time-masternode. */
+    val genesisHash: String get() = when (this) {
+        Mainnet -> "45181d4c65a3a2bcc2215d037267bee4cc2248f21764466846d2b7218b601ce5"
+        Testnet -> "b9523431d4e59a1b41d757a8c0f01ed023c11123761b1455e4644ef9d5599ff6"
+    }
 }
 
 /**

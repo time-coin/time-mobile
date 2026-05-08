@@ -633,6 +633,15 @@ class WalletService @Inject constructor(
             Log.d(TAG, "Trying peer: $url")
             val client = MasternodeClient(url, credentials)
             val h = client.healthCheck()
+            val network = if (_isTestnet.value) NetworkType.Testnet else NetworkType.Mainnet
+            val genesisHash = client.getGenesisHash()
+            if (genesisHash != network.genesisHash) {
+                Log.w(TAG, "Genesis hash mismatch at $url: expected ${network.genesisHash}, got $genesisHash")
+                client.close()
+                PeerDiscovery.blacklistPeer(url)
+                PeerDiscovery.clearPeerCache(_isTestnet.value, walletDir)
+                return false
+            }
             masternodeClient = client
             _health.value = h
             _connectedPeer.value = url

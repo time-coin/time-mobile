@@ -211,6 +211,13 @@ class MasternodeClient(
         return result.jsonPrimitive.longOrNull ?: 0
     }
 
+    /** Get the genesis block hash (height 0) to verify we're on the correct chain. */
+    suspend fun getGenesisHash(): String {
+        val result = rpcCall("getblockhash", buildJsonArray { add(0) })
+        return result.jsonPrimitive.contentOrNull
+            ?: throw MasternodeException("No genesis hash in getblockhash response")
+    }
+
     /** Query instant finality status. */
     suspend fun getTransactionFinality(txid: String): FinalityStatus {
         val result = rpcCall("gettransactionfinality", buildJsonArray { add(txid) })

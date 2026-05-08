@@ -353,7 +353,6 @@ fun OverviewScreen(service: WalletService) {
             }
         }
 
-        val cutoff24h = System.currentTimeMillis() / 1000 - 86_400
         val recentTxs = recentTransactions
 
         if (recentTxs.isEmpty()) {
