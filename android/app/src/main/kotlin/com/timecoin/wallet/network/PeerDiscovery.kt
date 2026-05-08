@@ -62,6 +62,7 @@ object PeerDiscovery {
         manualEndpoints: List<String> = emptyList(),
         credentials: Pair<String, String>? = null,
         cacheDir: File? = null,
+        expectedGenesisHash: String? = null,
     ): List<PeerInfo> = coroutineScope {
         val rpcPort = if (isTestnet) TESTNET_RPC_PORT else MAINNET_RPC_PORT
 
@@ -87,7 +88,7 @@ object PeerDiscovery {
         if (candidates.isEmpty()) return@coroutineScope emptyList()
 
         // 2. Parallel probe all candidates
-        var peerInfos = probeAll(candidates.toList(), credentials, rpcPort)
+        var peerInfos = probeAll(candidates.toList(), credentials, rpcPort, expectedGenesisHash)
         Log.d(TAG, "Probed ${peerInfos.size} peers, ${peerInfos.count { it.isHealthy }} healthy")
 
         // 3. Consensus filter
@@ -122,7 +123,7 @@ object PeerDiscovery {
 
         if (gossipEndpoints.isNotEmpty()) {
             Log.d(TAG, "Gossip discovered ${gossipEndpoints.size} new peers")
-            val gossipInfos = probeAll(gossipEndpoints.toList(), credentials, rpcPort)
+            val gossipInfos = probeAll(gossipEndpoints.toList(), credentials, rpcPort, expectedGenesisHash)
             val filteredGossip = consensusFilter(gossipInfos, peerInfos)
 
             // Merge: replace slowest peers if gossip peers are faster
@@ -173,9 +174,10 @@ object PeerDiscovery {
         endpoints: List<String>,
         credentials: Pair<String, String>?,
         rpcPort: Int,
+        expectedGenesisHash: String? = null,
     ): List<PeerInfo> = coroutineScope {
         endpoints.map { endpoint ->
-            async(Dispatchers.IO) { probePeer(endpoint, credentials, rpcPort) }
+            async(Dispatchers.IO) { probePeer(endpoint, credentials, rpcPort, expectedGenesisHash) }
         }.awaitAll()
     }
 
@@ -183,6 +185,7 @@ object PeerDiscovery {
         endpoint: String,
         credentials: Pair<String, String>?,
         rpcPort: Int,
+        expectedGenesisHash: String? = null,
     ): PeerInfo {
         // Extract host/port for TCP ping
         val url = if (!endpoint.startsWith("http")) "https://$endpoint" else endpoint
@@ -207,9 +210,25 @@ object PeerDiscovery {
                 client.close()
                 blockHeight = health.blockHeight
                 version = health.version
-                isHealthy = true
                 isSyncing = health.isSyncing
                 workingUrl = tryUrl
+
+                // Verify genesis hash before marking healthy — wrong-chain nodes
+                // must not pollute the consensus height used by the filter.
+                if (expectedGenesisHash != null) {
+                    val genesisHash = try {
+                        withTimeout(HEALTH_TIMEOUT_MS) { client.getGenesisHash() }
+                    } catch (_: Exception) { null }
+                    if (genesisHash != expectedGenesisHash) {
+                        Log.w(TAG, "Wrong chain at $tryUrl: genesis=$genesisHash")
+                        blacklistPeer(tryUrl)
+                        blockHeight = null
+                        client.close()
+                        break
+                    }
+                }
+
+                isHealthy = true
                 break
             } catch (e: Exception) {
                 Log.v(TAG, "Health check $tryUrl failed: ${e.message}")

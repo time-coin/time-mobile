@@ -537,6 +537,7 @@ class WalletService @Inject constructor(
             val session = networkSession
             try {
                 val isTestnet = _isTestnet.value
+                val network = if (isTestnet) NetworkType.Testnet else NetworkType.Mainnet
                 Log.d(TAG, "Connecting to network, isTestnet=$isTestnet")
 
                 // Load manual config (testnet config lives in testnet/ subdirectory)
@@ -558,6 +559,7 @@ class WalletService @Inject constructor(
                                     manualEndpoints = manualEndpoints,
                                     credentials = rpcCreds,
                                     cacheDir = walletDir,
+                                    expectedGenesisHash = network.genesisHash,
                                 )
                                 if (session != networkSession) return@launch
                                 _peerInfos.value = rankedPeers.map {
@@ -578,6 +580,7 @@ class WalletService @Inject constructor(
                     manualEndpoints = manualEndpoints,
                     credentials = rpcCreds,
                     cacheDir = walletDir,
+                    expectedGenesisHash = network.genesisHash,
                 )
 
                 _peerInfos.value = rankedPeers
