@@ -174,17 +174,15 @@ fun TransactionDetailScreen(service: WalletService) {
                 ),
             ) {
                 Column(Modifier.padding(16.dp)) {
-                    // Address
+                    // Address — show label as primary (if any), middle-ellipsized address as subtitle
                     val addrLabel = labelMap[transaction.address]
-                    if (addrLabel != null) {
-                        TxDetailField("Label", addrLabel)
-                        @Suppress("DEPRECATION")
-                        Divider(Modifier.padding(vertical = 8.dp))
-                    }
+                    val addrShort = transaction.address.take(10) + "..." + transaction.address.takeLast(8)
                     TxDetailField(
                         label = if (transaction.isSend) "To Address" else "Address",
                         value = transaction.address,
-                        monospace = true,
+                        displayValue = addrLabel ?: addrShort,
+                        subtitle = if (addrLabel != null) addrShort else null,
+                        monospace = addrLabel == null,
                         copyable = true,
                         context = context,
                     )
@@ -442,6 +440,8 @@ private fun BlockRewardBreakdownCard(
 private fun TxDetailField(
     label: String,
     value: String,
+    displayValue: String? = null,
+    subtitle: String? = null,
     monospace: Boolean = false,
     copyable: Boolean = false,
     context: Context? = null,
@@ -457,13 +457,26 @@ private fun TxDetailField(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text(
-                text = value,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                fontFamily = if (monospace) FontFamily.Monospace else FontFamily.Default,
-                modifier = Modifier.weight(1f),
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = displayValue ?: value,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    fontFamily = if (monospace) FontFamily.Monospace else FontFamily.Default,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (subtitle != null) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
             if (copyable && context != null) {
                 IconButton(
                     onClick = {

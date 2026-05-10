@@ -22,8 +22,8 @@ android {
         applicationId = "com.timecoin.wallet"
         minSdk = 26
         targetSdk = 35
-        versionCode = 29
-        versionName = "0.5.4"
+        versionCode = 30
+        versionName = "0.5.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
