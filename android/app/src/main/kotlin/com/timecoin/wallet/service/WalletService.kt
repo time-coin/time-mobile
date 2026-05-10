@@ -367,6 +367,10 @@ class WalletService @Inject constructor(
     private var backgroundSyncJob: Job? = null
     private var networkJob: Job? = null   // tracks connectToNetwork coroutine
     private var discoveryJob: Job? = null // tracks trimEmptyAddresses + discoverAddresses coroutine
+    private var prefetchJob: Job? = null  // peer discovery pre-fetch during PIN entry
+    private var preFetchedPeers: List<PeerInfo>? = null
+    private var preFetchedAt: Long = 0L
+    private val PREFETCH_TTL_MS = 120_000L // 2 minutes
     private var pendingMnemonic: String? = null
     @Volatile private var networkSession = 0  // incremented on each network switch; stale coroutines check this
 
@@ -426,6 +430,7 @@ class WalletService @Inject constructor(
             val encrypted = WalletManager.isEncrypted(walletDir, network)
             if (encrypted) {
                 _screen.value = Screen.PinUnlock
+                prefetchPeers(network)
             } else {
                 loadWallet(network, null)
             }
@@ -530,6 +535,29 @@ class WalletService @Inject constructor(
 
     // ── Network ──
 
+    /** Start peer discovery in the background during PIN entry so results are ready on unlock. */
+    private fun prefetchPeers(network: NetworkType) {
+        prefetchJob?.cancel()
+        prefetchJob = scope.launch {
+            try {
+                val isTestnet = network == NetworkType.Testnet
+                val config = ConfigManager.load(walletDir, isTestnet)
+                val peers = PeerDiscovery.discoverAndRank(
+                    isTestnet = isTestnet,
+                    manualEndpoints = ConfigManager.manualEndpoints(config),
+                    credentials = ConfigManager.rpcCredentials(config),
+                    cacheDir = walletDir,
+                    expectedGenesisHash = network.genesisHash,
+                )
+                preFetchedPeers = peers
+                preFetchedAt = System.currentTimeMillis()
+                Log.d(TAG, "prefetchPeers: pre-fetched ${peers.size} peers (${peers.count { it.isHealthy }} healthy)")
+            } catch (e: Exception) {
+                Log.w(TAG, "prefetchPeers failed: ${e.message}")
+            }
+        }
+    }
+
     private fun connectToNetwork() {
         networkJob?.cancel()
         discoveryJob?.cancel()
@@ -574,14 +602,25 @@ class WalletService @Inject constructor(
                     }
                 }
 
+                // Use pre-fetched peers if they were discovered during PIN entry and are still fresh
+                val prefetched = preFetchedPeers?.takeIf {
+                    System.currentTimeMillis() - preFetchedAt < PREFETCH_TTL_MS
+                }
+                preFetchedPeers = null
+
                 // Discover and rank all peers (parallel probe + gossip + consensus)
-                val rankedPeers = PeerDiscovery.discoverAndRank(
-                    isTestnet = isTestnet,
-                    manualEndpoints = manualEndpoints,
-                    credentials = rpcCreds,
-                    cacheDir = walletDir,
-                    expectedGenesisHash = network.genesisHash,
-                )
+                val rankedPeers = if (prefetched != null) {
+                    Log.d(TAG, "connectToNetwork: using ${prefetched.size} pre-fetched peers")
+                    prefetched
+                } else {
+                    PeerDiscovery.discoverAndRank(
+                        isTestnet = isTestnet,
+                        manualEndpoints = manualEndpoints,
+                        credentials = rpcCreds,
+                        cacheDir = walletDir,
+                        expectedGenesisHash = network.genesisHash,
+                    )
+                }
 
                 _peerInfos.value = rankedPeers
                 _peers.value = rankedPeers.map { it.endpoint }
@@ -1983,6 +2022,7 @@ class WalletService @Inject constructor(
         _utxoSynced.value = false
         _transactionsSynced.value = false
         _screen.value = Screen.PinUnlock
+        prefetchPeers(if (_isTestnet.value) NetworkType.Testnet else NetworkType.Mainnet)
     }
 
     /** Get the wallet file for export/sharing. */
@@ -2276,6 +2316,7 @@ class WalletService @Inject constructor(
         val encrypted = WalletManager.isEncrypted(walletDir, targetNetwork)
         if (encrypted) {
             _screen.value = Screen.PinUnlock
+            prefetchPeers(targetNetwork)
         } else {
             loadWallet(targetNetwork, null)
         }
