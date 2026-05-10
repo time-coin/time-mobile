@@ -224,6 +224,7 @@ fun WalletApp(service: WalletService) {
         if (shouldExit) {
             service.clearShouldExit()
             activity?.finishAndRemoveTask()
+            android.os.Process.killProcess(android.os.Process.myPid())
         }
     }
 
