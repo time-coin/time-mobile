@@ -22,6 +22,7 @@ import com.timecoin.wallet.crypto.Address
 import com.timecoin.wallet.crypto.NetworkType
 import com.timecoin.wallet.service.Screen
 import com.timecoin.wallet.service.WalletService
+import com.timecoin.wallet.ui.MainActivity
 import com.timecoin.wallet.ui.component.AppHamburgerMenu
 import java.text.SimpleDateFormat
 import java.util.*
@@ -481,6 +482,10 @@ fun SettingsScreen(service: WalletService) {
                     "$name ($code)"
                 } catch (_: Exception) { "—" }
             }
+            val activity = context as? MainActivity
+            var updateChecking by remember { mutableStateOf(false) }
+            var updateMessage by remember { mutableStateOf<String?>(null) }
+
             Text("About", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             Card(Modifier.fillMaxWidth()) {
@@ -493,6 +498,38 @@ fun SettingsScreen(service: WalletService) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("License")
                         Text("BSL 1.1")
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    @Suppress("DEPRECATION")
+                    Divider()
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = {
+                            updateChecking = true
+                            updateMessage = null
+                            activity?.checkForUpdate { hasUpdate ->
+                                updateChecking = false
+                                if (!hasUpdate) updateMessage = "You're up to date!"
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !updateChecking,
+                    ) {
+                        if (updateChecking) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.SystemUpdate, contentDescription = null, modifier = Modifier.size(20.dp))
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (updateChecking) "Checking..." else "Check for Updates")
+                    }
+                    updateMessage?.let {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
                     }
                 }
             }

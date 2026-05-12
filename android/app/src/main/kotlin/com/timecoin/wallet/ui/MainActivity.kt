@@ -129,9 +129,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun checkForUpdate() {
+    internal fun checkForUpdate(onResult: ((hasUpdate: Boolean) -> Unit)? = null) {
         appUpdateManager.appUpdateInfo.addOnSuccessListener { info ->
             if (info.updateAvailability() == UpdateAvailability.UPDATE_AVAILABLE) {
+                onResult?.invoke(true)
                 val options = when {
                     info.isUpdateTypeAllowed(AppUpdateType.IMMEDIATE) ->
                         AppUpdateOptions.newBuilder(AppUpdateType.IMMEDIATE).build()
@@ -140,6 +141,8 @@ class MainActivity : ComponentActivity() {
                     else -> return@addOnSuccessListener
                 }
                 appUpdateManager.startUpdateFlowForResult(info, updateLauncher, options)
+            } else {
+                onResult?.invoke(false)
             }
         }
     }
