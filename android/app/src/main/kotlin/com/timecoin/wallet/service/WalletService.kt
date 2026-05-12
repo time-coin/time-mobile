@@ -3,6 +3,8 @@ package com.timecoin.wallet.service
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.media.AudioManager
+import android.media.MediaPlayer
+import android.media.RingtoneManager
 import android.media.ToneGenerator
 import android.content.Context
 import android.content.Intent
@@ -67,6 +69,18 @@ class WalletService @Inject constructor(
         private const val INITIAL_TX_LIMIT = 100
         private const val TX_PAGE_SIZE = 100
         private const val NOTIF_ID_RECEIVE = 1001
+    }
+
+    private fun playReceiveSound() {
+        try {
+            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            MediaPlayer.create(context, uri)?.apply {
+                setOnCompletionListener { it.release() }
+                start()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "playReceiveSound failed: ${e.message}")
+        }
     }
 
     private fun showReceiveNotification(amountSats: Long) {
@@ -788,9 +802,12 @@ class WalletService @Inject constructor(
                         if (current.none { it.uniqueKey == instant.uniqueKey }) {
                             _transactions.value = listOf(instant) + current
                         }
-                        // Push notification for incoming coins (not sends)
-                        if (!isSend && _notificationsEnabled.value) {
-                            showReceiveNotification(notif.amount)
+                        // Push notification + sound for incoming coins (not sends)
+                        if (!isSend) {
+                            playReceiveSound()
+                            if (_notificationsEnabled.value) {
+                                showReceiveNotification(notif.amount)
+                            }
                         }
                         // Mark balance as unverified until UTXO refresh completes
                         _utxoSynced.value = false
