@@ -516,7 +516,6 @@ class WalletService @Inject constructor(
                 val cachedTxs = transactionDao.getAll()
                 if (cachedTxs.isNotEmpty()) {
                     _transactions.value = cachedTxs.map { it.toTransactionRecord() }
-                    _transactionsSynced.value = true  // show Verified immediately from last session
                     Log.d(TAG, "loadWallet: ${cachedTxs.size} cached transactions loaded")
                 }
                 val cachedBal = settingDao.get("cached_balance")
