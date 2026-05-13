@@ -516,6 +516,7 @@ class WalletService @Inject constructor(
                 val cachedTxs = transactionDao.getAll()
                 if (cachedTxs.isNotEmpty()) {
                     _transactions.value = cachedTxs.map { it.toTransactionRecord() }
+                    _transactionsSynced.value = true  // show Verified immediately from last session
                     Log.d(TAG, "loadWallet: ${cachedTxs.size} cached transactions loaded")
                 }
                 val cachedBal = settingDao.get("cached_balance")
@@ -704,19 +705,31 @@ class WalletService @Inject constructor(
             settingDao.set(SettingEntity("last_peer", url))
             Log.d(TAG, "Connected to $url, block=${h.blockHeight}")
 
-            // Kick off a quick balance fetch for immediate display while
-            // discovery runs. Tx/UTXO sync is intentionally deferred until
-            // after discovery so the "Verified" badge only appears once we
-            // know the full address set and have complete data.
             refreshBalance()
-
-            // Start WebSocket right away so we don't miss real-time events
-            // during the address trim / discovery phase.
             startWebSocket()
             startPolling()
 
-            // Trim and discover run sequentially, then do the full sync that
-            // flips the status to "Verified" once everything is confirmed.
+            // Run an immediate tx+utxo sync for the current (known) address set so
+            // "Verified" appears within a few seconds. Discovery still runs in
+            // the background and does a final re-sync if it finds more addresses.
+            val connectSession = networkSession
+            scope.launch {
+                try {
+                    coroutineScope {
+                        launch { refreshTransactionsSync(markSynced = true) }
+                        launch { refreshUtxosSync(markSynced = true) }
+                    }
+                    if (connectSession != networkSession) {
+                        _transactionsSynced.value = false
+                        _utxoSynced.value = false
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "Initial tx/utxo sync failed: ${e.message}")
+                }
+            }
+
             discoveryJob?.cancel()
             _discoveringAddresses.value = true
             discoveryJob = scope.launch {
@@ -724,7 +737,7 @@ class WalletService @Inject constructor(
                     val session = networkSession
                     trimEmptyAddresses(client)
                     if (session != networkSession) return@launch
-                    discoverAddresses() // calls refreshTransactionsSync/refreshUtxosSync with markSynced=true at end
+                    discoverAddresses()
                 } finally {
                     _discoveringAddresses.value = false
                 }
