@@ -2167,9 +2167,17 @@ class WalletService @Inject constructor(
                         masternodeClient = null
                     }
                 }
-                // Reconnect — discoverAddresses is called at the end of tryConnect
-                _error.value = "Reindex: reconnecting to masternode…"
+                // Reconnect — discovery + sync happen inside tryConnect
+                Log.d(TAG, "reindexWallet: reconnecting to find healthy peer")
                 connectToNetwork()
+                // Keep _reindexing=true until the background sync completes so the button
+                // stays disabled and the user knows work is still in progress.
+                withTimeoutOrNull(180_000) {
+                    combine(_transactionsSynced, _utxoSynced) { tx, utxo -> tx && utxo }.first { it }
+                }
+                if (_transactionsSynced.value && _utxoSynced.value) {
+                    _success.value = "Wallet reindexed successfully"
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "reindexWallet failed", e)
                 _error.value = "Reindex failed: ${e.message}"
