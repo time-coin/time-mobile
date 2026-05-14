@@ -14,7 +14,7 @@ class TransactionTest {
     @Test
     fun `new transaction has correct defaults`() {
         val tx = Transaction()
-        assertEquals(1, tx.version)
+        assertEquals(2, tx.version)
         assertTrue(tx.inputs.isEmpty())
         assertTrue(tx.outputs.isEmpty())
         assertEquals(0, tx.lockTime)

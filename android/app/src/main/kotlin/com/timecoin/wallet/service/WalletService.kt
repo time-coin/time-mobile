@@ -257,7 +257,6 @@ class WalletService @Inject constructor(
         scope.launch {
             try {
                 val addresses = w.getAddresses()
-                var totalBatches = 0
                 var doneBatches = 0
                 var totalConsolidated = 0
 
@@ -276,7 +275,7 @@ class WalletService @Inject constructor(
                 }
 
                 val batchSize = 50
-                totalBatches = addrUtxosList.sumOf { (it.utxos.size + batchSize - 1) / batchSize }
+                val totalBatches = addrUtxosList.sumOf { (it.utxos.size + batchSize - 1) / batchSize }
 
                 if (totalBatches == 0) {
                     _consolidationStatus.value = "Nothing to consolidate — already 1 UTXO or fewer per address."
@@ -502,6 +501,19 @@ class WalletService @Inject constructor(
         scope.launch {
             _loading.value = true
             try {
+                // Fast path: wallet is still in memory from a soft lock (lockWallet).
+                // Just verify the PIN and resume — no reconnect needed, sync never stopped.
+                if (wallet != null) {
+                    if (password != currentPassword) {
+                        _error.value = "Incorrect PIN"
+                        _screen.value = Screen.PinUnlock
+                        return@launch
+                    }
+                    _walletLoaded.value = true
+                    _screen.value = Screen.Overview
+                    return@launch
+                }
+
                 Log.d(TAG, "loadWallet: loading network=$network")
                 wallet = WalletManager.load(walletDir, network, password)
                 currentPassword = password
@@ -798,8 +810,8 @@ class WalletService @Inject constructor(
                     is WsEvent.TransactionReceived -> {
                         // Immediately add transaction to UI for instant feedback
                         val notif = event.notification
-                        val w = wallet
-                        val isSend = w != null && !w.getAddresses().contains(notif.address)
+                        val currentWallet = wallet
+                        val isSend = currentWallet != null && !currentWallet.getAddresses().contains(notif.address)
                         val instant = TransactionRecord(
                             txid = notif.txid,
                             vout = notif.outputIndex,
@@ -2027,31 +2039,23 @@ class WalletService @Inject constructor(
         }
     }
 
-    /** Lock the wallet: disconnect, clear sensitive state, return to PIN screen. */
+    /**
+     * Lock the wallet: navigate to PIN screen while keeping the network connection
+     * and background sync running so the wallet is fully up-to-date on unlock.
+     * Private keys stay in memory; the wallet file is flushed to disk for safety.
+     * For a full disconnect + key wipe, use logout() instead.
+     */
     fun lockWallet() {
-        Log.d(TAG, "lockWallet: disconnecting and clearing state")
-        masternodeClient?.close()
-        masternodeClient = null
-        wsClient?.stop()
-        wsClient = null
-        pollJob?.cancel()
-        backgroundSyncJob?.cancel()
-        pollJob = null
-
-        wallet = null
-        currentPassword = null
+        Log.d(TAG, "lockWallet: locking screen, keeping network sync alive")
+        scope.launch {
+            try {
+                wallet?.save(walletDir, currentPassword)
+            } catch (e: Exception) {
+                Log.w(TAG, "lockWallet: wallet save failed", e)
+            }
+        }
         _walletLoaded.value = false
-        _connectedPeer.value = null
-        _wsConnected.value = false
-        _health.value = null
-        _balance.value = Balance()
-        _transactions.value = emptyList()
-        _utxos.value = emptyList()
-        _addresses.value = emptyList()
-        _utxoSynced.value = false
-        _transactionsSynced.value = false
         _screen.value = Screen.PinUnlock
-        prefetchPeers(if (_isTestnet.value) NetworkType.Testnet else NetworkType.Mainnet)
     }
 
     /** Get the wallet file for export/sharing. */

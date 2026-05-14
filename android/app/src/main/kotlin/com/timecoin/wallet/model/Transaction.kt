@@ -7,6 +7,9 @@ import com.timecoin.wallet.crypto.toHexString
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.security.MessageDigest
 
 /**
@@ -99,7 +102,7 @@ data class TxOutput(
  */
 @Serializable
 data class Transaction(
-    val version: Int = 1,
+    val version: Int = 2,
     val inputs: MutableList<TxInput> = mutableListOf(),
     val outputs: MutableList<TxOutput> = mutableListOf(),
     @SerialName("lock_time") val lockTime: Int = 0,
@@ -125,26 +128,41 @@ data class Transaction(
     /** Total output value in satoshis. */
     fun totalOutput(): Long = outputs.sumOf { it.value }
 
-    /** Create the signature message for a specific input (matches desktop). */
+    /** Serialize outputs in bincode format (matches Rust bincode::serialize(&Vec<TxOutput>)). */
+    private fun outputsToBincodeBytes(): ByteArray {
+        val buf = ByteArrayOutputStream()
+        fun writeU64LE(v: Long) = buf.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(v).array())
+        writeU64LE(outputs.size.toLong())
+        for (output in outputs) {
+            writeU64LE(output.value)
+            writeU64LE(output.scriptPubkey.size.toLong())
+            buf.write(output.scriptPubkey)
+        }
+        return buf.toByteArray()
+    }
+
+    /**
+     * Create the signature message for a specific input (matches masternode consensus.rs).
+     * v1: txid || input_index(u32 LE) || sha256(bincode(outputs))
+     * v2: CHAIN_ID(u32 LE=1) || txid || input_index(u32 LE) || sha256(bincode(outputs))
+     */
     private fun createSignatureMessage(inputIdx: Int): ByteArray {
-        // Create a copy with all scriptSigs cleared
         val signingTx = this.copy(
             inputs = inputs.map { it.copy(scriptSig = ByteArray(0)) }.toMutableList()
         )
         val txHash = signingTx.hash()
-
-        // message = tx_hash + input_index_le + sha256(outputs)
-        val indexBytes = ByteArray(4)
-        indexBytes[0] = (inputIdx and 0xFF).toByte()
-        indexBytes[1] = ((inputIdx shr 8) and 0xFF).toByte()
-        indexBytes[2] = ((inputIdx shr 16) and 0xFF).toByte()
-        indexBytes[3] = ((inputIdx shr 24) and 0xFF).toByte()
-
-        val outputsJson = Json.encodeToString(kotlinx.serialization.builtins.ListSerializer(TxOutput.serializer()), outputs.toList())
+        val indexBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(inputIdx).array()
         val sha = MessageDigest.getInstance("SHA-256")
-        val outputsHash = sha.digest(outputsJson.toByteArray())
+        val outputsHash = sha.digest(outputsToBincodeBytes())
 
-        return txHash + indexBytes + outputsHash
+        val msg = ByteArrayOutputStream()
+        if (version >= 2) {
+            msg.write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(1).array()) // CHAIN_ID = 1
+        }
+        msg.write(txHash)
+        msg.write(indexBytes)
+        msg.write(outputsHash)
+        return msg.toByteArray()
     }
 
     /** Sign a specific input with the given keypair. */
