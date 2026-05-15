@@ -1,0 +1,69 @@
+name: TimeCoinWallet
+options:
+  bundleIdPrefix: com.timecoin
+  deploymentTarget:
+    iOS: "15.0"
+  xcodeVersion: "15.0"
+  swift: "5.9"
+
+packages:
+  Argon2Swift:
+    url: https://github.com/tmthecoder/Argon2Swift
+    exactVersion: 0.0.5
+  Alamofire:
+    url: https://github.com/Alamofire/Alamofire
+    minorVersion: 5.8.0
+  KeychainSwift:
+    url: https://github.com/evgenyneu/keychain-swift
+    minorVersion: 20.0.0
+
+targets:
+  TimeCoinWallet:
+    type: application
+    platform: iOS
+    sources:
+      - path: TimeCoinWallet
+        excludes:
+          - "**/*.md"
+    resources:
+      - path: TimeCoinWallet/bip39_english.txt
+    dependencies:
+      - package: Argon2Swift
+      - package: Alamofire
+      - package: KeychainSwift
+    info:
+      path: TimeCoinWallet/Info.plist
+      properties:
+        CFBundleDisplayName: TIME Wallet
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        NSCameraUsageDescription: Camera is needed to scan QR codes
+        NSFaceIDUsageDescription: Face ID is used to unlock your wallet
+        NSPhotoLibraryUsageDescription: Photo library access is used to import QR codes
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.timecoin.wallet
+        TARGETED_DEVICE_FAMILY: "1"
+        IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        SWIFT_VERSION: "5.9"
+        ENABLE_BITCODE: NO
+        DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+      configs:
+        debug:
+          DEBUG_INFORMATION_FORMAT: dwarf
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+
+  TimeCoinWalletTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - TimeCoinWalletTests
+    dependencies:
+      - target: TimeCoinWallet
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.timecoin.wallet.tests

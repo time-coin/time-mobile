@@ -1,20 +1,12 @@
-# Uncomment the next line to define a global platform for your project
 platform :ios, '15.0'
 
 target 'TimeCoinWallet' do
-  # Comment the next line if you don't want to use dynamic frameworks
   use_frameworks!
 
-  # Pods for TimeCoinWallet
-  pod 'BitcoinKit', '~> 1.1.0'
-  pod 'SwiftSocket', '~> 2.1.0'
   pod 'Alamofire', '~> 5.8'
   pod 'KeychainSwift', '~> 20.0'
-  pod 'SwiftQRScanner', '~> 1.0'
 
   target 'TimeCoinWalletTests' do
     inherit! :search_paths
-    # Pods for testing
   end
-
 end
