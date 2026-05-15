@@ -24,6 +24,8 @@ android {
         targetSdk = 35
         versionCode = 38
         versionName = "0.5.13"
+        // NOTE: When updating versionCode or versionName, also update the website:
+        //   ~/projects/time-website  →  js/config.js  →  mobileVersion  (single source of truth)
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
